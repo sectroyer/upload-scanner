@@ -146,7 +146,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9090
     print(f"[*] ExifTool path : {EXIFTOOL}")
     print(f"[*] ExifTool version: 10.96 (vulnerable, CVE-2021-22204 affects < 12.24)")
     print(f"[!] This server is intentionally vulnerable — test environment only")
