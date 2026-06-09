@@ -49,6 +49,7 @@ from javax.swing import JMenuItem
 from javax.swing import AbstractAction
 from javax.swing import BorderFactory
 from javax.swing import SwingConstants
+from javax.swing import JProgressBar
 from javax.swing.table import AbstractTableModel
 from javax.swing.event import DocumentListener
 from java.awt import Font
@@ -1052,18 +1053,65 @@ class BurpExtender(IBurpExtender, IScannerCheck,
 
         scan_was_stopped = False
 
+        # Build the ordered list of steps that will actually run so we can show accurate progress.
+        opts = injector.opts
+        _steps = (
+            [("Sanity check", True)] +
+            [("Active scan",        opts.modules['activescan'].isSelected() and opts.redl_enabled)] +
+            [(label, opts.modules[key].isSelected()) for key, label in [
+                ('imagetragick',      "ImageTragick"),
+                ('magick',            "Image-/GraphicsMagick"),
+                ('gs',                "Ghostscript"),
+                ('libavformat',       "LibAVFormat"),
+                ('php',               "PHP"),
+                ('jsp',               "JSP"),
+                ('asp',               "ASP"),
+                ('htaccess',          "htaccess/web.config"),
+                ('cgi',               "CGI"),
+                ('ssi',               "SSI/ESI"),
+                ('xxe',               "XXE"),
+                ('xss',               "XSS"),
+                ('eicar',             "Eicar"),
+                ('pdf',               "PDF"),
+                ('ssrf',              "SSRF"),
+                ('csv_spreadsheet',   "CSV/spreadsheet"),
+                ('path_traversal',    "Path traversal"),
+                ('polyglot',          "Polyglot"),
+                ('fingerping',        "Fingerping"),
+                ('quirks',            "Quirks"),
+                ('url_replacer',      "URL replacer"),
+                ('recursive_uploader',"Recursive uploader"),
+                ('fuzzer',            "Fuzzer"),
+                ('dos',               "DoS"),
+            ]]
+        )
+        _total = sum(1 for _, enabled in _steps if enabled)
+        _done = [0]
+
+        def _progress(name):
+            _done[0] += 1
+            sc = injector.opts.scan_controler
+            if sc:
+                pct = int(100 * _done[0] / _total) if _total else 100
+                sc.lbl_status.setText("Scan status: {} ({}/{})".format(name, _done[0], _total))
+                sc.progress_bar.setValue(pct)
+                sc.progress_bar.setString("{}%".format(pct))
+
         try:
             # Sanity/debug check. Simply uploads a white picture called screenshot_white.png
+            _progress("Sanity check")
             print "Doing sanity check and uploading a white png file called screenshot_white.png"
             self._sanity_check(injector)
             # Make sure we don't active scan again a request we are active scanning right now
             # Do this by checking for redl_enabled
             if injector.opts.modules['activescan'].isSelected() and injector.opts.redl_enabled:
+                _progress("Active scan")
                 brr = injector.get_brr()
                 service = brr.getHttpService()
                 self._callbacks.doActiveScan(service.getHost(), service.getPort(), 'https' in service.getProtocol(), brr.getRequest())
             # Imagetragick - CVE based and fixed, will deprecate at one point
             if injector.opts.modules['imagetragick'].isSelected():
+                _progress("ImageTragick")
                 print "\nDoing ImageTragick checks"
                 colab_tests.extend(self._imagetragick_cve_2016_3718(injector, burp_colab))
                 colab_tests.extend(self._imagetragick_cve_2016_3714_rce(injector, burp_colab))
@@ -1074,51 +1122,61 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Magick (ImageMagick and GraphicsMagick) - generic, as these are exploiting features
             if injector.opts.modules['magick'].isSelected():
+                _progress("Image-/GraphicsMagick")
                 print "\nDoing Image-/GraphicsMagick checks"
                 colab_tests.extend(self._magick(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Ghostscript - CVE based and fixed, will deprecate at one point
             if injector.opts.modules['gs'].isSelected():
+                _progress("Ghostscript")
                 print "\nDoing Ghostscript checks"
                 colab_tests.extend(self._ghostscript(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # LibAVFormat - generic, as the file format will always support external URLs
             if injector.opts.modules['libavformat'].isSelected():
+                _progress("LibAVFormat")
                 print "\nDoing LibAVFormat checks"
                 colab_tests.extend(self._libavformat(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # PHP RCEs - generic, as there will always be someone who screws up PHP:
             if injector.opts.modules['php'].isSelected():
+                _progress("PHP")
                 print "\nDoing PHP code checks"
                 self._php_rce(injector)
             # JSP RCEs - generic, as there will always be someone who screws up JSP:
             if injector.opts.modules['jsp'].isSelected():
+                _progress("JSP")
                 print "\nDoing JSP code checks"
                 self._jsp_rce(injector)
             # ASP RCEs - generic, as there will always be someone who screws up ASP:
             if injector.opts.modules['asp'].isSelected():
+                _progress("ASP")
                 print "\nDoing ASP code checks"
                 self._asp_rce(injector)
             # htaccess - generic
             # we do the htaccess upload early, because if it enables "Options +Includes ..." by uploading a .htaccess
             # then we can successfully do Server Side Includes, CGI execution, etc. in a later module...
             if injector.opts.modules['htaccess'].isSelected():
+                _progress("htaccess/web.config")
                 print "\nDoing htaccess/web.config checks"
                 colab_tests.extend(self._htaccess(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # CGIs - generic
             if injector.opts.modules['cgi'].isSelected():
+                _progress("CGI")
                 print "\nDoing CGIs checks"
                 colab_tests.extend(self._cgi(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # SSI - generic
             if injector.opts.modules['ssi'].isSelected():
+                _progress("SSI/ESI")
                 print "\nDoing SSI/ESI checks"
                 colab_tests.extend(self._ssi(injector, burp_colab))
                 colab_tests.extend(self._esi(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # XXE - generic
             if injector.opts.modules['xxe'].isSelected():
+                _progress("XXE")
                 print "\nDoing XXE checks"
                 colab_tests.extend(self._xxe_svg_external_image(injector, burp_colab))
                 colab_tests.extend(self._xxe_svg_external_java_archive(injector, burp_colab))
@@ -1128,6 +1186,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # XSS - generic
             if injector.opts.modules['xss'].isSelected():
+                _progress("XSS")
                 print "\nDoing XSS checks"
                 self._xss_html(injector)
                 self._xss_svg(injector)
@@ -1135,34 +1194,41 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 self._xss_backdoored_file(injector)
             # eicar - generic
             if injector.opts.modules['eicar'].isSelected():
+                _progress("Eicar")
                 print "\nDoing eicar checks"
                 self._eicar(injector)
             # pdf - generic
             if injector.opts.modules['pdf'].isSelected():
+                _progress("PDF")
                 print "\nDoing pdf checks"
                 colab_tests.extend(self._pdf(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # other ssrf - generic
             if injector.opts.modules['ssrf'].isSelected():
+                _progress("SSRF")
                 print "\nDoing other SSRF checks"
                 colab_tests.extend(self._ssrf(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # CSV/spreadsheet - generic
             if injector.opts.modules['csv_spreadsheet'].isSelected():
+                _progress("CSV/spreadsheet")
                 print "\nDoing CSV/spreadsheet checks"
                 colab_tests.extend(self._csv_spreadsheet(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # path traversal - generic
             if injector.opts.modules['path_traversal'].isSelected():
+                _progress("Path traversal")
                 print "\nDoing path traversal checks"
                 self._path_traversal_archives(injector)
             # Polyglot - generic
             if injector.opts.modules['polyglot'].isSelected():
+                _progress("Polyglot")
                 print "\nDoing polyglot checks"
                 colab_tests.extend(self._polyglot(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Fingerping - generic
             if injector.opts.modules['fingerping'].isSelected():
+                _progress("Fingerping")
                 print "\nDoing fingerping checks"
                 self._fingerping(injector)
 
@@ -1177,20 +1243,24 @@ class BurpExtender(IBurpExtender, IScannerCheck,
 
             # Upload quirks - generic
             if injector.opts.modules['quirks'].isSelected():
+                _progress("Quirks")
                 print "\nDoing quirk checks"
                 self._quirks_with_passive(injector)
                 self._quirks_without_passive(injector)
             # Generic URL replacer module - obviously generic
             if injector.opts.modules['url_replacer'].isSelected():
+                _progress("URL replacer")
                 print "\nDoing generic URL replacement checks"
                 colab_tests.extend(self._generic_url_replacer(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Recursive uploader - generic
             if injector.opts.modules['recursive_uploader'].isSelected():
+                _progress("Recursive uploader")
                 print "\nDoing recursive upload checks"
                 self._recursive_upload_files(injector, burp_colab)
             # Fuzz - generic
             if injector.opts.modules['fuzzer'].isSelected():
+                _progress("Fuzzer")
                 print "\nDoing fuzzer checks"
                 self._fuzz(injector)
         except StopScanException:
@@ -1204,6 +1274,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
         if not scan_was_stopped:
             try:
                 if injector.opts.modules['dos'].isSelected():
+                    _progress("DoS")
                     print "\nDoing timeout and DoS checks"
                     self._timeout_and_dos(injector)
             except StopScanException:
@@ -8459,6 +8530,15 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.gbc.gridwidth = 1
         self.gbc.gridy += 1
 
+        self.gbc.gridwidth = 2
+        self.progress_bar = JProgressBar(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStringPainted(True)
+        self.progress_bar.setString("")
+        self.button_panel.add(self.progress_bar, self.gbc)
+        self.gbc.gridwidth = 1
+        self.gbc.gridy += 1
+
         self.gbc.gridwidth = 1
         self.btn_preflight = JButton()
         self.btn_preflight.setText("Send preflight request")
@@ -9570,6 +9650,8 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.scan_controler.btn_start.setEnabled(True)
         self.scan_controler.btn_stop.setEnabled(False)
         self.scan_controler.lbl_status.setText("Scan status: Scan stopped/finished")
+        self.scan_controler.progress_bar.setValue(100)
+        self.scan_controler.progress_bar.setString("Done")
 
     def _create_template_request(self, base_request_response, url_path, service):
         iRequestInfo = self._helpers.analyzeRequest(base_request_response)
