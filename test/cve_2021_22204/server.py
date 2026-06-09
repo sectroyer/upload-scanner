@@ -77,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{self.address_string()}] {fmt % args}")
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        if self.path in ("/", "/index.html", "/upload", "/upload/"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path != "/upload":
+        if self.path not in ("/upload", "/upload/"):
             self.send_response(404)
             self.end_headers()
             return
