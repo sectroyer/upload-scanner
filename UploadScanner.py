@@ -1067,11 +1067,11 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 print "\nDoing ImageTragick checks"
                 colab_tests.extend(self._imagetragick_cve_2016_3718(injector, burp_colab))
                 colab_tests.extend(self._imagetragick_cve_2016_3714_rce(injector, burp_colab))
-                self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
                 self._imagetragick_cve_2016_3714_sleep(injector)
                 self._bad_manners_cve_2018_16323(injector)
                 colab_tests.extend(self._exiftool_cve_2021_22204(injector, burp_colab))
                 self._imagemagick_cve_2022_44268(injector)
+                self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Magick (ImageMagick and GraphicsMagick) - generic, as these are exploiting features
             if injector.opts.modules['magick'].isSelected():
                 print "\nDoing Image-/GraphicsMagick checks"
