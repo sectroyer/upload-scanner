@@ -8,10 +8,11 @@ which is vulnerable to arbitrary command execution via crafted DjVu ANTa
 annotations embedded in any file extension ExifTool accepts.
 
 Usage:
-    python3 server.py [port]       default port: 8080
+    python3 server.py [port]       default port: 9090
 
-Point the upload scanner at:
-    http://127.0.0.1:<port>/upload   (field name: "file")
+Upload scanner configuration:
+    Upload endpoint : POST http://127.0.0.1:<port>/upload  (field: file)
+    Download prefix : http://127.0.0.1:<port>/download/
 """
 
 import os
@@ -23,6 +24,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 EXIFTOOL = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "bin", "exiftool.pl")
 )
+
+# In-memory store: filename -> raw bytes of the uploaded file
+_store = {}
 
 HTML_FORM = b"""\
 <!DOCTYPE html>
@@ -53,7 +57,6 @@ def _parse_multipart(rfile, content_type, content_length):
         return None, None
 
     raw = rfile.read(content_length)
-    # Use email parser to split parts
     msg = email.message_from_bytes(
         b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + raw
     )
@@ -79,6 +82,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write(HTML_FORM)
+
+        elif self.path.startswith("/download/"):
+            filename = self.path[len("/download/"):]
+            data = _store.get(filename)
+            if data is None:
+                self._respond(404, b"File not found")
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -102,7 +119,9 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(400, b"No file received")
             return
 
-        # Determine suffix from uploaded filename so ExifTool picks the right parser
+        # Store the raw upload so /download/<filename> can serve it back
+        _store[filename] = data
+
         _, suffix = os.path.splitext(filename)
         suffix = suffix or ".jpg"
 
@@ -132,6 +151,7 @@ class Handler(BaseHTTPRequestHandler):
             "<!DOCTYPE html><html><body>"
             f"<h2>Metadata for: {filename}</h2>"
             f"<pre>{exif_output}</pre>"
+            f'<p><a href="/download/{filename}">Download file</a></p>'
             '<p><a href="/">Upload another</a></p>'
             "</body></html>"
         ).encode()
@@ -147,11 +167,12 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 9090
-    print(f"[*] ExifTool path : {EXIFTOOL}")
-    print(f"[*] ExifTool version: 10.96 (vulnerable, CVE-2021-22204 affects < 12.24)")
+    print(f"[*] ExifTool path    : {EXIFTOOL}")
+    print(f"[*] ExifTool version : 10.96 (vulnerable, CVE-2021-22204 affects < 12.24)")
     print(f"[!] This server is intentionally vulnerable — test environment only")
     print(f"[*] Listening on http://0.0.0.0:{port}")
-    print(f"[*] Upload endpoint: POST http://127.0.0.1:{port}/upload  (field: file)")
+    print(f"[*] Upload endpoint  : POST http://127.0.0.1:{port}/upload  (field: file)")
+    print(f"[*] Download prefix  : http://127.0.0.1:{port}/download/")
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
