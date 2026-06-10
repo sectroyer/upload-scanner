@@ -156,6 +156,9 @@ class BurpExtender(IBurpExtender, IScannerCheck,
     # ReDownloader constants/read-only:
     REDL_URL_BAD_HEADERS = ("content-length:", "accept:", "content-type:", "referer:")
     REDL_FILENAME_MARKER = "${FILENAME}"
+    REDL_UPLOAD_TOKEN_MARKER = "${UPLOAD_RESPONSE_TOKEN}"
+    REDL_UPLOAD_FILE_ID_MARKER = "${UPLOAD_FILE_ID}"
+    REDL_CSRF_TOKEN_MARKER = "${CSRF_TOKEN}"
     PYTHON_STR_MARKER_START = "${PYTHONSTR:"
     PYTHON_STR_MARKER_END = "}"
 
@@ -702,10 +705,10 @@ class BurpExtender(IBurpExtender, IScannerCheck,
 
     # Implement IContextMenuFactory
     def createMenuItems(self, invocation): #IContextMenuInvocation
-        action = MenuItemAction(invocation, self)
-        menu_item = JMenuItem(action)
-        menu_item.setText("Send to Upload Scanner")
-        return [menu_item, ]
+        menu_item = JMenuItem(MenuItemAction("Add to Upload Scanner", invocation, self))
+        menu_item_preflight = JMenuItem(MenuItemAction("Send as preflight request", invocation, self, role="preflight"))
+        menu_item_publish = JMenuItem(MenuItemAction("Send as publish request", invocation, self, role="publish"))
+        return [menu_item, menu_item_preflight, menu_item_publish]
 
     # interaction from context menu
     def new_request_response(self, invocation):
@@ -724,6 +727,42 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 # Take all settings from global options:
                 options.deserialize(self._global_opts.serialize(), global_to_tab=True)
                 self.create_tab(options, sc)
+
+    def new_request_response_as_preflight(self, invocation):
+        brr = invocation.getSelectedMessages()[0]
+        if not brr.getRequest():
+            print "No request to send as preflight to Upload Scanner."
+            return
+        with self.globals_write_lock:
+            if not self._option_panels:
+                print "No Upload Scanner tabs open yet. Add an upload request first."
+                return
+            latest_index = max(self._option_panels.keys())
+            opts = self._option_panels[latest_index]
+            sc = opts.scan_controler
+            service = brr.getHttpService()
+            sc.set_preflight_req(service, brr.getRequest())
+            full_url = FloydsHelpers.u2s(self._helpers.analyzeRequest(brr).getUrl().toString())
+            opts.redl_preflight_url = full_url
+            opts.tf_redl_preflight_url.setText(full_url)
+
+    def new_request_response_as_publish(self, invocation):
+        brr = invocation.getSelectedMessages()[0]
+        if not brr.getRequest():
+            print "No request to send as publish to Upload Scanner."
+            return
+        with self.globals_write_lock:
+            if not self._option_panels:
+                print "No Upload Scanner tabs open yet. Add an upload request first."
+                return
+            latest_index = max(self._option_panels.keys())
+            opts = self._option_panels[latest_index]
+            sc = opts.scan_controler
+            service = brr.getHttpService()
+            sc.set_publish_req(service, brr.getRequest())
+            full_url = FloydsHelpers.u2s(self._helpers.analyzeRequest(brr).getUrl().toString())
+            opts.redl_publish_url = full_url
+            opts.tf_redl_publish_url.setText(full_url)
 
     def create_tab(self, options, sc):
         # main split view
@@ -4708,6 +4747,14 @@ trailer <<
         # Btw: that's a 12 digit number, and the last dash delimited number of a UUID is also 12 digits...
 
         req = req.replace("${RANDOMIZE}", str(random.randint(100000000000, 999999999999)))
+        if redownload_filename:
+            req = req.replace(BurpExtender.REDL_FILENAME_MARKER, urllib.quote(redownload_filename))
+        if redownload_filename and injector.opts.redl_enabled and injector.opts.redl_configured and injector.opts.redl_preflight_url:
+            preflight_rr = injector.opts.fetch_csrf_token()
+            if injector.opts.create_log and preflight_rr:
+                self.add_log_entry(preflight_rr)
+        if injector.opts.redl_enabled and injector.opts.current_csrf_token:
+            req = req.replace(BurpExtender.REDL_CSRF_TOKEN_MARKER, injector.opts.current_csrf_token)
         base_request_response = injector.get_brr()
         service = base_request_response.getHttpService()
         # print "_make_http_request", service
@@ -4721,13 +4768,13 @@ trailer <<
                 # create a new log entry with the message details
                 self.add_log_entry(upload_rr)
             if redownload_filename and injector.opts.redl_enabled and injector.opts.redl_configured:
-                preflight_rr, download_rr = injector.opts.redownloader_try_redownload(resp, redownload_filename)
-                urr.preflight_rr = preflight_rr
+                publish_rr, download_rr = injector.opts.redownloader_try_redownload(resp, redownload_filename)
+                urr.publish_rr = publish_rr
                 urr.download_rr = download_rr
                 if injector.opts.create_log:
                     # create a new log entry with the message details
-                    if urr.preflight_rr:
-                        self.add_log_entry(urr.preflight_rr)
+                    if urr.publish_rr:
+                        self.add_log_entry(urr.publish_rr)
                     if urr.download_rr:
                         self.add_log_entry(urr.download_rr)
         else:
@@ -8004,9 +8051,9 @@ class UploadRequestsResponses:
     A class that describes requests/responses from the upload request
     to the downloaded file response again.
     """
-    def __init__(self, upload_rr, preflight_rr=None, download_rr=None):
+    def __init__(self, upload_rr, publish_rr=None, download_rr=None):
         self.upload_rr = upload_rr
-        self.preflight_rr = preflight_rr
+        self.publish_rr = publish_rr
         self.download_rr = download_rr
 
 
@@ -8357,8 +8404,8 @@ class CollaboratorMonitorThread(Thread):
                     issue.detail += self._get_interactions_as_str(interactions)
                     issue.setUrl(self.extension._helpers.analyzeRequest(colab_test.urr.upload_rr).getUrl())
                     issue.httpMessagesPy.append(colab_test.urr.upload_rr)
-                    if colab_test.urr.preflight_rr:
-                        issue.httpMessagesPy.append(colab_test.urr.preflight_rr)
+                    if colab_test.urr.publish_rr:
+                        issue.httpMessagesPy.append(colab_test.urr.publish_rr)
                     if colab_test.urr.download_rr:
                         issue.httpMessagesPy.append(colab_test.urr.download_rr)
                     self.extension._add_scan_issue(issue)
@@ -8398,6 +8445,7 @@ class ScanMessageEditorController(IMessageEditorController):
         self.methods = {
             "upload" : [self.getUploadHttpService, self.getUploadRequest, self.getUploadResponse],
             "preflight" : [self.getPreflightHttpService, self.getPreflightRequest, self.getPreflightResponse],
+            "publish" : [self.getPublishHttpService, self.getPublishRequest, self.getPublishResponse],
             "redownload" : [self.getRedownloadHttpService, self.getRedownloadRequest, self.getRedownloadResponse]
         }
         self.methods = self.methods[msg_type]
@@ -8428,6 +8476,15 @@ class ScanMessageEditorController(IMessageEditorController):
 
     def getPreflightResponse(self):
         return self.sc.preflight_resp_view.getMessage()
+
+    def getPublishHttpService(self):
+        return self.sc.publish_req_service
+
+    def getPublishRequest(self):
+        return self.sc.publish_req_view.getMessage()
+
+    def getPublishResponse(self):
+        return self.sc.publish_resp_view.getMessage()
 
     def getRedownloadHttpService(self):
         return self.sc.redownload_req_service
@@ -8477,6 +8534,10 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.lbl_preflight_req_service = None
         self.tf_preflight_req_service = None
 
+        self.publish_req_service = None
+        self.lbl_publish_req_service = None
+        self.tf_publish_req_service = None
+
         self.redownload_req_service = None
         self.lbl_redownload_req_service = None
         self.tf_redownload_req_service = None
@@ -8490,11 +8551,14 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
     def serialize(self):
         serialized_object = {'upload_req_service': self.tf_upload_req_service.getText(),
                              'preflight_req_service': self.tf_preflight_req_service.getText(),
+                             'publish_req_service': self.tf_publish_req_service.getText(),
                              'redownload_req_service': self.tf_redownload_req_service.getText(),
                              'upload_req_view': self.upload_req_view.getMessage(),
                              'upload_resp_view': self.upload_resp_view.getMessage(),
                              'preflight_req_view': self.preflight_req_view.getMessage(),
                              'preflight_resp_view': self.preflight_resp_view.getMessage(),
+                             'publish_req_view': self.publish_req_view.getMessage(),
+                             'publish_resp_view': self.publish_resp_view.getMessage(),
                              'redownload_req_view': self.redownload_req_view.getMessage(),
                              'redownload_resp_view': self.redownload_resp_view.getMessage()}
 
@@ -8504,14 +8568,18 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
 
     def deserialize(self, serialized_object):
         self.tf_upload_req_service.setText(serialized_object['upload_req_service'])
-        self.tf_preflight_req_service.setText(serialized_object['preflight_req_service'])
+        self.tf_preflight_req_service.setText(serialized_object.get('preflight_req_service', ''))
+        self.tf_publish_req_service.setText(serialized_object.get('publish_req_service', ''))
         self.tf_redownload_req_service.setText(serialized_object['redownload_req_service'])
 
         self.upload_req_view.setMessage(serialized_object['upload_req_view'], True)
         self.upload_resp_view.setMessage(serialized_object['upload_resp_view'], False)
 
-        self.preflight_req_view.setMessage(serialized_object['preflight_req_view'], True)
-        self.preflight_resp_view.setMessage(serialized_object['preflight_resp_view'], False)
+        self.preflight_req_view.setMessage(serialized_object.get('preflight_req_view', None) or "", True)
+        self.preflight_resp_view.setMessage(serialized_object.get('preflight_resp_view', None) or "", False)
+
+        self.publish_req_view.setMessage(serialized_object.get('publish_req_view', None) or "", True)
+        self.publish_resp_view.setMessage(serialized_object.get('publish_resp_view', None) or "", False)
 
         self.redownload_req_view.setMessage(serialized_object['redownload_req_view'], True)
         self.redownload_resp_view.setMessage(serialized_object['redownload_resp_view'], False)
@@ -8537,6 +8605,15 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.disable_tab(self.preflight_req_view)
         self.disable_tab(self.preflight_resp_view)
 
+    def disable_publish(self):
+        self.lbl_publish_req_service.setVisible(False)
+        self.tf_publish_req_service.setVisible(False)
+        self.btn_publish.setEnabled(False)
+        self.publish_req_view.setMessage("", True)
+        self.publish_resp_view.setMessage("", False)
+        self.disable_tab(self.publish_req_view)
+        self.disable_tab(self.publish_resp_view)
+
     def disable_redownload(self):
         self.btn_test.setEnabled(False)
         self.lbl_redownload_req_service.setVisible(False)
@@ -8552,6 +8629,12 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.tf_preflight_req_service.setVisible(True)
         self.enable_tab(self.preflight_req_view)
         self.enable_tab(self.preflight_resp_view)
+
+    def enable_publish(self):
+        self.lbl_publish_req_service.setVisible(True)
+        self.tf_publish_req_service.setVisible(True)
+        self.enable_tab(self.publish_req_view)
+        self.enable_tab(self.publish_resp_view)
 
     def enable_redownload(self):
         self.lbl_redownload_req_service.setVisible(True)
@@ -8573,6 +8656,11 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.preflight_resp_view = self._callbacks.createMessageEditor(ScanMessageEditorController(self, "preflight"), False)
         self.preflight_resp_view.setMessage("", False)
 
+        self.publish_req_view = self._callbacks.createMessageEditor(ScanMessageEditorController(self, "publish"), True)
+        self.publish_req_view.setMessage("", True)
+        self.publish_resp_view = self._callbacks.createMessageEditor(ScanMessageEditorController(self, "publish"), False)
+        self.publish_resp_view.setMessage("", False)
+
         self.redownload_req_view = self._callbacks.createMessageEditor(ScanMessageEditorController(self, "redownload"), True)
         self.redownload_req_view.setMessage("", True)
         self.redownload_resp_view = self._callbacks.createMessageEditor(ScanMessageEditorController(self, "redownload"), False)
@@ -8582,6 +8670,8 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.tabs.addTab("Upload response", self.upload_resp_view.getComponent())
         self.tabs.addTab("Preflight request", self.preflight_req_view.getComponent())
         self.tabs.addTab("Preflight response", self.preflight_resp_view.getComponent())
+        self.tabs.addTab("Publish request", self.publish_req_view.getComponent())
+        self.tabs.addTab("Publish response", self.publish_resp_view.getComponent())
         self.tabs.addTab("ReDownload request", self.redownload_req_view.getComponent())
         self.tabs.addTab("ReDownload response", self.redownload_resp_view.getComponent())
 
@@ -8625,6 +8715,12 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.btn_preflight.setText("Send preflight request")
         self.btn_preflight.setEnabled(False)
         self.button_panel.add(self.btn_preflight, self.gbc)
+        self.gbc.gridx += 1
+
+        self.btn_publish = JButton()
+        self.btn_publish.setText("Send publish request")
+        self.btn_publish.setEnabled(False)
+        self.button_panel.add(self.btn_publish, self.gbc)
         self.gbc.gridx += 1
 
         self.btn_test = JButton()
@@ -8680,6 +8776,18 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.gbc.gridy += 1
         self.gbc.gridx = 0
 
+        self.lbl_publish_req_service = JLabel("Publish request target (TCP/IP/TLS):")
+        self.button_panel.add(self.lbl_publish_req_service, self.gbc)
+        self.lbl_publish_req_service.setVisible(False)
+        self.gbc.gridx += 1
+        self.tf_publish_req_service = JTextField('', ScanController.TEXTFIELD_SIZE)
+        self.tf_publish_req_service.getDocument().addDocumentListener(self)
+        self.tf_publish_req_service.setVisible(False)
+        self.button_panel.add(self.tf_publish_req_service, self.gbc)
+
+        self.gbc.gridy += 1
+        self.gbc.gridx = 0
+
         self.lbl_redownload_req_service = JLabel("Redownload request target (TCP/IP/TLS):")
         self.button_panel.add(self.lbl_redownload_req_service, self.gbc)
         self.lbl_redownload_req_service.setVisible(False)
@@ -8708,6 +8816,20 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.preflight_resp_view.setMessage(resp, False)
         self.lbl_parser.setText("Configuration status: Preflight response received")
         self.enable_preflight()
+
+    def set_publish_req(self, service, req):
+        self.publish_req_service = service
+        self.tf_publish_req_service.setText(CustomHttpService.to_url(service))
+        self.lbl_publish_req_service.setVisible(True)
+        self.tf_publish_req_service.setVisible(True)
+        self.publish_req_view.setMessage(req, True)
+        self.btn_publish.setEnabled(True)
+        self.enable_tab(self.publish_req_view)
+
+    def set_publish_resp(self, resp):
+        self.publish_resp_view.setMessage(resp, False)
+        self.lbl_parser.setText("Configuration status: Publish response received")
+        self.enable_publish()
 
     def set_redownload_req(self, service, req):
         self.redownload_req_service = service
@@ -8744,6 +8866,12 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
                 OptionsPanel.mark_configured(self.lbl_preflight_req_service)
             except Exception, e:
                 OptionsPanel.mark_misconfigured(self.lbl_preflight_req_service)
+        if self.lbl_publish_req_service.isVisible():
+            try:
+                self.publish_req_service = CustomHttpService(FloydsHelpers.u2s(self.tf_publish_req_service.getText()))
+                OptionsPanel.mark_configured(self.lbl_publish_req_service)
+            except Exception, e:
+                OptionsPanel.mark_misconfigured(self.lbl_publish_req_service)
         if self.lbl_redownload_req_service.isVisible():
             try:
                 self.redownload_req_service = CustomHttpService(FloydsHelpers.u2s(self.tf_redownload_req_service.getText()))
@@ -8836,7 +8964,17 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.redl_end_marker = ''
         self.redl_end_marker_transformed = ''  # transformed means ${PYTHONSTR:''} placeholders changed to actual values
         self.redl_repl_backslash = False
-        self.redl_parse_preflight_url = ''
+        self.redl_preflight_url = ''
+        self.redl_csrf_start = ''
+        self.redl_csrf_end = ''
+        self.current_csrf_token = None
+        self.current_upload_token = None
+        self.current_upload_file_id = None
+        self.redl_publish_url = ''
+        self.redl_upload_token_start = ''
+        self.redl_upload_token_end = ''
+        self.redl_upload_file_id_start = ''
+        self.redl_upload_file_id_end = ''
         self.redl_prefix = ''
         self.redl_suffix = ''
         self.redl_static_url = ''
@@ -8889,7 +9027,14 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         serialized_object['redl_start_marker'] = self.redl_start_marker
         serialized_object['redl_end_marker'] = self.redl_end_marker
         serialized_object['redl_repl_backslash'] = self.redl_repl_backslash
-        serialized_object['redl_parse_preflight_url'] = self.redl_parse_preflight_url
+        serialized_object['redl_preflight_url'] = self.redl_preflight_url
+        serialized_object['redl_csrf_start'] = self.redl_csrf_start
+        serialized_object['redl_csrf_end'] = self.redl_csrf_end
+        serialized_object['redl_publish_url'] = self.redl_publish_url
+        serialized_object['redl_upload_token_start'] = self.redl_upload_token_start
+        serialized_object['redl_upload_token_end'] = self.redl_upload_token_end
+        serialized_object['redl_upload_file_id_start'] = self.redl_upload_file_id_start
+        serialized_object['redl_upload_file_id_end'] = self.redl_upload_file_id_end
         serialized_object['redl_prefix'] = self.redl_prefix
         serialized_object['redl_suffix'] = self.redl_suffix
         serialized_object['redl_static_url'] = self.redl_static_url
@@ -8955,7 +9100,14 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
             self.tf_redl_start_marker.setText(serialized_object['redl_start_marker'])
             self.tf_redl_end_marker.setText(serialized_object['redl_end_marker'])
             self.cb_redl_repl_backslash.setSelected(serialized_object['redl_repl_backslash'])
-            self.tf_redl_parse_preflight_url.setText(serialized_object['redl_parse_preflight_url'])
+            self.tf_redl_preflight_url.setText(serialized_object.get('redl_preflight_url', ''))
+            self.tf_redl_csrf_start.setText(serialized_object.get('redl_csrf_start', ''))
+            self.tf_redl_csrf_end.setText(serialized_object.get('redl_csrf_end', ''))
+            self.tf_redl_publish_url.setText(serialized_object.get('redl_publish_url', serialized_object.get('redl_parse_preflight_url', '')))
+            self.tf_redl_upload_token_start.setText(serialized_object.get('redl_upload_token_start', ''))
+            self.tf_redl_upload_token_end.setText(serialized_object.get('redl_upload_token_end', ''))
+            self.tf_redl_upload_file_id_start.setText(serialized_object.get('redl_upload_file_id_start', ''))
+            self.tf_redl_upload_file_id_end.setText(serialized_object.get('redl_upload_file_id_end', ''))
             self.tf_redl_prefix.setText(serialized_object['redl_prefix'])
             self.tf_redl_suffix.setText(serialized_object['redl_suffix'])
             self.tf_redl_static_url.setText(serialized_object['redl_static_url'])
@@ -9166,9 +9318,30 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
 
         if self.redl_enabled:
             self.lbl_redl = self.label("ReDownloader parser options (after upload, try to redownload the file)")
-            self.lbl_redl_parse_preflight_url, self.tf_redl_parse_preflight_url = self.large_tf(
-                "Parse other response (preflight request), eg. http://example.org/myprofile/ :",
-                text=self.redl_parse_preflight_url)
+            self.lbl_redl_preflight_url, self.tf_redl_preflight_url = self.large_tf(
+                "Preflight URL (optional pre-upload GET to fetch CSRF token), eg. http://example.org/form:",
+                text=self.redl_preflight_url)
+            self.lbl_redl_csrf_start, self.tf_redl_csrf_start = self.large_tf(
+                "CSRF token start marker in preflight response (use " + BurpExtender.REDL_CSRF_TOKEN_MARKER + " in publish request):",
+                text=self.redl_csrf_start)
+            self.lbl_redl_csrf_end, self.tf_redl_csrf_end = self.large_tf(
+                "CSRF token end marker in preflight response:",
+                text=self.redl_csrf_end)
+            self.lbl_redl_publish_url, self.tf_redl_publish_url = self.large_tf(
+                "Publish URL (optional post-upload request), eg. http://example.org/publish/:",
+                text=self.redl_publish_url)
+            self.lbl_redl_upload_token_start, self.tf_redl_upload_token_start = self.large_tf(
+                "Upload token start marker in upload response (use " + BurpExtender.REDL_UPLOAD_TOKEN_MARKER + " in publish request):",
+                text=self.redl_upload_token_start)
+            self.lbl_redl_upload_token_end, self.tf_redl_upload_token_end = self.large_tf(
+                "Upload token end marker in upload response:",
+                text=self.redl_upload_token_end)
+            self.lbl_redl_upload_file_id_start, self.tf_redl_upload_file_id_start = self.large_tf(
+                "File ID start marker in upload response (use " + BurpExtender.REDL_UPLOAD_FILE_ID_MARKER + " in download URL / prefix / suffix):",
+                text=self.redl_upload_file_id_start)
+            self.lbl_redl_upload_file_id_end, self.tf_redl_upload_file_id_end = self.large_tf(
+                "File ID end marker in upload response:",
+                text=self.redl_upload_file_id_end)
             self.lbl_redl_start_marker, self.tf_redl_start_marker = self.large_tf(
                 "1. Start marker to parse URL from response, eg. MARKER/upload/file.png:",
                 text=self.redl_start_marker)
@@ -9193,6 +9366,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
             # Now let's register what happens when the buttons are pressed of the scan_controler pressed:
             self.scan_controler.btn_test.addActionListener(ActionFunction(self._test_configuration))
             self.scan_controler.btn_preflight.addActionListener(ActionFunction(self._test_preflight))
+            self.scan_controler.btn_publish.addActionListener(ActionFunction(self._test_publish))
             self.scan_controler.btn_start.addActionListener(ActionFunction(self._start_scan))
             self.scan_controler.btn_stop.addActionListener(ActionFunction(self.stop_scan))
 
@@ -9475,13 +9649,14 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
     def _test_preflight_thread(self):
         msg = FloydsHelpers.jb2ps(self.scan_controler.preflight_req_view.getMessage())
         if msg:
-            # print "_test_preflight_thread", self.scan_controler.preflight_req_service
             msg = msg.replace("${RANDOMIZE}", str(random.randint(100000000000, 999999999999)))
             resp = self._callbacks.makeHttpRequest(self.scan_controler.preflight_req_service, msg).getResponse()
-            # print "Testing preflight ", self.scan_controler.preflight_req_service
             if resp:
                 resp = FloydsHelpers.jb2ps(resp)
                 self.scan_controler.set_preflight_resp(resp)
+                if self.redl_csrf_start and self.redl_csrf_end:
+                    token = FloydsHelpers.between_markers(resp, self.redl_csrf_start, self.redl_csrf_end)
+                    self.current_csrf_token = token or None
                 self.check_redl_config_no_requests(recalculate_upload=True)
             else:
                 self.scan_controler.lbl_parser.setText("Configuration status: Did not receive a response to the preflight request!")
@@ -9491,6 +9666,30 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
             self.scan_controler.lbl_parser.setText("Configuration status: Preflight request message not available")
             OptionsPanel.mark_misconfigured(self.scan_controler.lbl_parser)
             self.scan_controler.btn_preflight.setEnabled(False)
+
+    def _test_publish(self, event):
+        self.scan_controler.lbl_parser.setText("Configuration status: Sending publish request...")
+        OptionsPanel.mark_configured(self.scan_controler.lbl_parser)
+        self.scan_controler.btn_publish.setEnabled(False)
+        Thread(RunnableFunction(self._test_publish_thread)).start()
+
+    def _test_publish_thread(self):
+        msg = FloydsHelpers.jb2ps(self.scan_controler.publish_req_view.getMessage())
+        if msg and self.scan_controler.publish_req_service:
+            msg = msg.replace("${RANDOMIZE}", str(random.randint(100000000000, 999999999999)))
+            resp = self._callbacks.makeHttpRequest(self.scan_controler.publish_req_service, msg).getResponse()
+            if resp:
+                resp = FloydsHelpers.jb2ps(resp)
+                self.scan_controler.set_publish_resp(resp)
+                self.check_redl_config_no_requests(recalculate_upload=True)
+            else:
+                self.scan_controler.lbl_parser.setText("Configuration status: Did not receive a response to the publish request!")
+                OptionsPanel.mark_misconfigured(self.scan_controler.lbl_parser)
+            self.scan_controler.btn_publish.setEnabled(True)
+        else:
+            self.scan_controler.lbl_parser.setText("Configuration status: Publish request message/service not available")
+            OptionsPanel.mark_misconfigured(self.scan_controler.lbl_parser)
+            self.scan_controler.btn_publish.setEnabled(False)
 
     def _test_configuration(self, event):
         self.scan_controler.lbl_parser.setText("Configuration status: Sending ReDownloader request...")
@@ -9514,7 +9713,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         else:
             self.scan_controler.lbl_parser.setText("Configuration status: ReDownload request message/service not available")
             OptionsPanel.mark_misconfigured(self.scan_controler.lbl_parser)
-            self.scan_controler.btn_preflight.setEnabled(True)
+            self.scan_controler.btn_test.setEnabled(True)
 
     def check_redl_config_no_requests(self, recalculate_upload=False):
         # TODO: By now this is such a mess, that no changes are possible without breaking everything
@@ -9527,7 +9726,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
 
         # we don't want to destroy changes in the requests if the user changed any options
         # we only recalculate them if necessary
-        recalculate_preflight = not self.redl_parse_preflight_url == FloydsHelpers.u2s(self.tf_redl_parse_preflight_url.getText())
+        recalculate_preflight = not self.redl_publish_url == FloydsHelpers.u2s(self.tf_redl_publish_url.getText())
         # however, the redownload requests is nearly always recalculated when any of those options are changed:
         recalculate_upload = recalculate_upload or recalculate_preflight or \
             not self.redl_start_marker == FloydsHelpers.u2s(self.tf_redl_start_marker.getText()) or \
@@ -9551,39 +9750,78 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
             OptionsPanel.mark_disabled(self.lbl_redl_end_marker)
         self.redl_repl_backslash = self.cb_redl_repl_backslash.isSelected()
 
-        # Preflight URL
-        preflight_misconfigured = False
-        self.redl_parse_preflight_url = FloydsHelpers.u2s(self.tf_redl_parse_preflight_url.getText())
-        if self.redl_parse_preflight_url == "":
-            OptionsPanel.mark_disabled(self.lbl_redl_parse_preflight_url)
-            self.scan_controler.disable_preflight()
-        elif recalculate_preflight:
-            # First, make sure we calculate it based on the correct upload request/response taken from the UI
-            self.scan_controler.update_brr_from_ui()
-            if self.redl_parse_preflight_url.startswith("http://") or self.redl_parse_preflight_url.startswith("https://"):
-                s = CustomHttpService(self.redl_parse_preflight_url)
-                if s.getHost() and s.getPort() and s.getProtocol():
-                    service_preflight, preflight_req = self._calculate_preflight_request(self.scan_controler.brr)
-                    if service_preflight and preflight_req:
-                        self.scan_controler.set_preflight_req(service_preflight, preflight_req)
-                        OptionsPanel.mark_configured(self.lbl_redl_parse_preflight_url)
-                    else:
-                        preflight_misconfigured = True
-                else:
-                    preflight_misconfigured = True
-
-            elif self.redl_parse_preflight_url.startswith("/"):
-                service_preflight, preflight_req = self._calculate_preflight_request(self.scan_controler.brr)
-                if service_preflight and preflight_req:
-                    self.scan_controler.set_preflight_req(service_preflight, preflight_req)
-                    OptionsPanel.mark_configured(self.lbl_redl_parse_preflight_url)
-                else:
-                    preflight_misconfigured = True
+        # Preflight (pre-upload) CSRF token markers
+        self.redl_preflight_url = FloydsHelpers.u2s(self.tf_redl_preflight_url.getText())
+        self.redl_csrf_start = FloydsHelpers.u2s(self.tf_redl_csrf_start.getText())
+        self.redl_csrf_end = FloydsHelpers.u2s(self.tf_redl_csrf_end.getText())
+        if self.redl_preflight_url:
+            if self.redl_preflight_url.startswith("http://") or self.redl_preflight_url.startswith("https://") or self.redl_preflight_url.startswith("/"):
+                OptionsPanel.mark_configured(self.lbl_redl_preflight_url)
+                self.scan_controler.enable_preflight()
             else:
-                preflight_misconfigured = True
-        if preflight_misconfigured:
-            OptionsPanel.mark_misconfigured(self.lbl_redl_parse_preflight_url)
+                OptionsPanel.mark_misconfigured(self.lbl_redl_preflight_url)
+                misconfiguration = True
+        else:
+            OptionsPanel.mark_disabled(self.lbl_redl_preflight_url)
             self.scan_controler.disable_preflight()
+        if self.redl_csrf_start and self.redl_csrf_end:
+            OptionsPanel.mark_configured(self.lbl_redl_csrf_start)
+            OptionsPanel.mark_configured(self.lbl_redl_csrf_end)
+        else:
+            OptionsPanel.mark_disabled(self.lbl_redl_csrf_start)
+            OptionsPanel.mark_disabled(self.lbl_redl_csrf_end)
+
+        # Publish upload-response token markers
+        self.redl_upload_token_start = FloydsHelpers.u2s(self.tf_redl_upload_token_start.getText())
+        self.redl_upload_token_end = FloydsHelpers.u2s(self.tf_redl_upload_token_end.getText())
+        if self.redl_upload_token_start and self.redl_upload_token_end:
+            OptionsPanel.mark_configured(self.lbl_redl_upload_token_start)
+            OptionsPanel.mark_configured(self.lbl_redl_upload_token_end)
+        else:
+            OptionsPanel.mark_disabled(self.lbl_redl_upload_token_start)
+            OptionsPanel.mark_disabled(self.lbl_redl_upload_token_end)
+
+        # File ID markers (for download URL)
+        self.redl_upload_file_id_start = FloydsHelpers.u2s(self.tf_redl_upload_file_id_start.getText())
+        self.redl_upload_file_id_end = FloydsHelpers.u2s(self.tf_redl_upload_file_id_end.getText())
+        if self.redl_upload_file_id_start and self.redl_upload_file_id_end:
+            OptionsPanel.mark_configured(self.lbl_redl_upload_file_id_start)
+            OptionsPanel.mark_configured(self.lbl_redl_upload_file_id_end)
+        else:
+            OptionsPanel.mark_disabled(self.lbl_redl_upload_file_id_start)
+            OptionsPanel.mark_disabled(self.lbl_redl_upload_file_id_end)
+
+        # Publish URL (post-upload)
+        publish_misconfigured = False
+        self.redl_publish_url = FloydsHelpers.u2s(self.tf_redl_publish_url.getText())
+        if self.redl_publish_url == "":
+            OptionsPanel.mark_disabled(self.lbl_redl_publish_url)
+            self.scan_controler.disable_publish()
+        elif recalculate_preflight:
+            self.scan_controler.update_brr_from_ui()
+            if self.redl_publish_url.startswith("http://") or self.redl_publish_url.startswith("https://"):
+                s = CustomHttpService(self.redl_publish_url)
+                if s.getHost() and s.getPort() and s.getProtocol():
+                    service_publish, publish_req = self._calculate_publish_request(self.scan_controler.brr)
+                    if service_publish and publish_req:
+                        self.scan_controler.set_publish_req(service_publish, publish_req)
+                        OptionsPanel.mark_configured(self.lbl_redl_publish_url)
+                    else:
+                        publish_misconfigured = True
+                else:
+                    publish_misconfigured = True
+            elif self.redl_publish_url.startswith("/"):
+                service_publish, publish_req = self._calculate_publish_request(self.scan_controler.brr)
+                if service_publish and publish_req:
+                    self.scan_controler.set_publish_req(service_publish, publish_req)
+                    OptionsPanel.mark_configured(self.lbl_redl_publish_url)
+                else:
+                    publish_misconfigured = True
+            else:
+                publish_misconfigured = True
+        if publish_misconfigured:
+            OptionsPanel.mark_misconfigured(self.lbl_redl_publish_url)
+            self.scan_controler.disable_publish()
             misconfiguration = True
 
         self.redl_prefix = FloydsHelpers.u2s(self.tf_redl_prefix.getText())
@@ -9625,11 +9863,11 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
                 # This means for sure this is prefered over the static URL (even when misconfigured)
                 OptionsPanel.mark_disabled(self.lbl_redl_static_url)
                 resp = None
-                if self.redl_parse_preflight_url:
-                    if self.scan_controler.preflight_resp_view.getMessage():
-                        resp = FloydsHelpers.jb2ps(self.scan_controler.preflight_resp_view.getMessage())
+                if self.redl_publish_url:
+                    if self.scan_controler.publish_resp_view.getMessage():
+                        resp = FloydsHelpers.jb2ps(self.scan_controler.publish_resp_view.getMessage())
                     else:
-                        self.scan_controler.lbl_parser.setText("Configuration status: Parse with preflight ready for test, check requests manually first!")
+                        self.scan_controler.lbl_parser.setText("Configuration status: Parse with publish ready for test, check requests manually first!")
                         OptionsPanel.mark_configured(self.scan_controler.lbl_parser)
                         self.scan_controler.btn_start.setText("Start scan without ReDownloader")
                         self.scan_controler.btn_test.setEnabled(True)
@@ -9815,21 +10053,24 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
             url_path = "/"
         return url_path, service
 
-    def _calculate_preflight_request(self, brr, use_from_ui=False):
-        if self.redl_parse_preflight_url:
+    def _calculate_publish_request(self, brr, use_from_ui=False):
+        if self.redl_publish_url:
             service = brr.getHttpService()
-            url_path_preflight, service_preflight = self._redownloader_calculate_service(self.redl_parse_preflight_url, service)
-            if service_preflight.getHost():
+            url_path_publish, service_publish = self._redownloader_calculate_service(self.redl_publish_url, service)
+            if service_publish.getHost():
                 if use_from_ui:
-                    preflight_req = self._use_template_request(brr, url_path_preflight, service_preflight)
+                    publish_req = self._use_template_request(brr, url_path_publish, service_publish)
                 else:
-                    preflight_req = self._create_template_request(brr, url_path_preflight, service_preflight)
-                return service_preflight, preflight_req
+                    publish_req = self._create_template_request(brr, url_path_publish, service_publish)
+                return service_publish, publish_req
         return None, None
 
     def _calculate_download_request(self, brr, resp, sent_filename, use_from_ui=False):
+        file_id = getattr(self, 'current_upload_file_id', None) or ''
         prefix = self.redl_prefix.replace(BurpExtender.REDL_FILENAME_MARKER, urllib.quote(sent_filename))
+        prefix = prefix.replace(BurpExtender.REDL_UPLOAD_FILE_ID_MARKER, urllib.quote(file_id))
         suffix = self.redl_suffix.replace(BurpExtender.REDL_FILENAME_MARKER, urllib.quote(sent_filename))
+        suffix = suffix.replace(BurpExtender.REDL_UPLOAD_FILE_ID_MARKER, urllib.quote(file_id))
         redl_start_marker = self.redl_start_marker_transformed.replace(BurpExtender.REDL_FILENAME_MARKER, sent_filename)
         redl_end_marker = self.redl_end_marker_transformed.replace(BurpExtender.REDL_FILENAME_MARKER, sent_filename)
         service = brr.getHttpService()
@@ -9852,6 +10093,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
                 return service, new_req
         elif self.redl_static_url:
             url_path = self.redl_static_url.replace(BurpExtender.REDL_FILENAME_MARKER, urllib.quote(sent_filename))
+            url_path = url_path.replace(BurpExtender.REDL_UPLOAD_FILE_ID_MARKER, urllib.quote(file_id))
             url_path, service = self._redownloader_calculate_service(url_path, service)
             if use_from_ui:
                 new_req = self._use_template_request(brr, url_path, service)
@@ -9865,25 +10107,72 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         return None, None
 
 
+    def fetch_csrf_token(self):
+        """Send pre-upload GET to fetch a fresh CSRF token. Stores result in self.current_csrf_token."""
+        self.current_csrf_token = None
+        if not self.redl_preflight_url:
+            return None
+        brr = self.scan_controler.brr
+        service = brr.getHttpService()
+        url_path, svc = self._redownloader_calculate_service(self.redl_preflight_url, service)
+        req = self._create_template_request(brr, url_path, svc)
+        req = req.replace("${RANDOMIZE}", str(random.randint(100000000000, 999999999999)))
+        r = self._callbacks.makeHttpRequest(svc, req).getResponse()
+        if not r:
+            return None
+        resp_str = FloydsHelpers.jb2ps(r)
+        preflight_rr = CustomRequestResponse('', '', svc, req, r)
+        if self.redl_csrf_start and self.redl_csrf_end:
+            token = FloydsHelpers.between_markers(resp_str, self.redl_csrf_start, self.redl_csrf_end)
+            if token:
+                self.current_csrf_token = token
+        return preflight_rr
+
     def redownloader_try_redownload(self, resp, sent_filename):
-        preflight_rr = None
+        publish_rr = None
         download_rr = None
-        preflight_request = self.scan_controler.preflight_req_view.getMessage()
-        if preflight_request:
-            brr = CustomRequestResponse("", "", self.scan_controler.preflight_req_service, preflight_request, None)
-            service, req = self._calculate_preflight_request(brr, use_from_ui=True)
+
+        # Extract both values from the upload response before resp is overwritten
+        # by the publish step.
+        self.current_upload_token = None
+        if self.redl_upload_token_start and self.redl_upload_token_end:
+            self.current_upload_token = FloydsHelpers.between_markers(
+                resp, self.redl_upload_token_start, self.redl_upload_token_end)
+        self.current_upload_file_id = None
+        if self.redl_upload_file_id_start and self.redl_upload_file_id_end:
+            self.current_upload_file_id = FloydsHelpers.between_markers(
+                resp, self.redl_upload_file_id_start, self.redl_upload_file_id_end)
+
+        publish_request = self.scan_controler.publish_req_view.getMessage()
+        if publish_request:
+            brr = CustomRequestResponse("", "", self.scan_controler.publish_req_service, publish_request, None)
+            service, req = self._calculate_publish_request(brr, use_from_ui=True)
             if service and req:
                 req = req.replace("${RANDOMIZE}", str(random.randint(100000000000, 999999999999)))
-                # Overwrite the upload response to be parsed with the preflight response to be parsed:
+                req = req.replace(BurpExtender.REDL_FILENAME_MARKER, urllib.quote(sent_filename))
+                if self.current_upload_token:
+                    req = req.replace(BurpExtender.REDL_UPLOAD_TOKEN_MARKER, self.current_upload_token)
+                if self.current_csrf_token:
+                    req = req.replace(BurpExtender.REDL_CSRF_TOKEN_MARKER, self.current_csrf_token)
+                # Fix Content-Length after marker substitution (body length may have changed)
+                _sep = BurpExtender.NEWLINE * 2
+                _sep_idx = req.find(_sep)
+                if _sep_idx != -1:
+                    _req_headers = req[:_sep_idx]
+                    _req_body = req[_sep_idx + len(_sep):]
+                    if _req_body:
+                        _req_headers = FloydsHelpers.fix_content_length(_req_headers, len(_req_body), BurpExtender.NEWLINE)
+                    req = _req_headers + _sep + _req_body
+                # Overwrite the response to parse for download URL with the publish response:
                 r = self._callbacks.makeHttpRequest(service, req).getResponse()
                 if r:
-                    preflight_rr = CustomRequestResponse('', '', service, req, r)
+                    publish_rr = CustomRequestResponse('', '', service, req, r)
                     resp = FloydsHelpers.jb2ps(r)
                 else:
-                    print "No Preflight response, aborting redownload for: \n", preflight_request
+                    print "No Publish response, aborting redownload for: \n", publish_request
                     return None, None
             else:
-                print "No Preflight request could be calculated, aborting redownload for: \n", preflight_request
+                print "No Publish request could be calculated, aborting redownload for: \n", publish_request
                 return None, None
 
         redownload_request = self.scan_controler.redownload_req_view.getMessage()
@@ -9897,30 +10186,35 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
                 # so no more processing of the response required here
                 # However, if we want to support tests that rely on knowing what was downloaded
                 # such as "fingerping", then we need to return this to the module
-                # print "redownloader_try_redownload 2", service
                 req = req.replace("${RANDOMIZE}", str(random.randint(100000000000, 999999999999)))
                 r = self._callbacks.makeHttpRequest(service, req).getResponse()
                 if r:
                     download_rr = CustomRequestResponse('', '', service, req, r)
                 else:
-                    print "No Download response, aborting redownload for: \n", req
-                    return None, None
+                    print "No Download response for: \n", req
+                    return publish_rr, None
             else:
                 # Happens quiet often, eg. when the server rejected our uploaded file and gave a different response
                 # Such as a 500 or 400 error, so this case is in the usual workflow
-                # print "Couldn't calculate download request", unicode(service), req
-                return None, None
-        return preflight_rr, download_rr
+                return publish_rr, None
+        return publish_rr, download_rr
 
 
 class MenuItemAction(AbstractAction):
 
-    def __init__(self, invocation, extension_object):
+    def __init__(self, name, invocation, extension_object, role=None):
+        AbstractAction.__init__(self, name)
         self.invocation = invocation
         self.extension_object = extension_object
+        self.role = role
 
     def actionPerformed(self, e):
-        self.extension_object.new_request_response(self.invocation)
+        if self.role == "preflight":
+            self.extension_object.new_request_response_as_preflight(self.invocation)
+        elif self.role == "publish":
+            self.extension_object.new_request_response_as_publish(self.invocation)
+        else:
+            self.extension_object.new_request_response(self.invocation)
 
 
 class CloseableTab(JPanel, ActionListener):
