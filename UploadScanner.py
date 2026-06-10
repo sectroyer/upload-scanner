@@ -1592,10 +1592,17 @@ class BurpExtender(IBurpExtender, IScannerCheck,
         colabs = []
 
         for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
-            attack_command = cmd + " " + server
             issue = self._create_issue_template(injector.get_brr(), name, base_detail + detail_colab.format(cmd), confidence, severity)
+            # Build DjVu on demand so the ANTa chunk size in the binary matches the actual
+            # collaborator URL length. Pre-building with a placeholder and then string-replacing
+            # leaves the baked-in chunk size wrong, causing ExifTool to discard the annotation.
+            _cmd = cmd
+            _domain_only = replace and not callable(replace)
+            def _make_djvu(_, full_url, _cmd=_cmd, _domain_only=_domain_only):
+                url = full_url.split("://")[-1].rstrip("/") if _domain_only else full_url
+                return _build_payload(_cmd + " " + url)
             colabs.extend(self._send_collaborator(injector, burp_colab, types, basename + cmd_name,
-                                                  _build_payload(attack_command), issue, replace=replace))
+                                                  "", issue, replace=_make_djvu))
 
         return colabs
 
