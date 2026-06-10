@@ -1675,6 +1675,8 @@ class BurpExtender(IBurpExtender, IScannerCheck,
 
             while True:
                 header = image.read(8)
+                if len(header) < 8:
+                    return
                 length, type = struct.unpack('!I4s', header)
 
                 if type == b'IEND':
