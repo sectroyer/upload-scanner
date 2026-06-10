@@ -12,11 +12,16 @@ The converted output is what is stored and served back, so an attacker can
 upload a crafted PNG, download the converted result, and read arbitrary files
 from the server filesystem.
 
-Uses the bundled ImageMagick 7.1.0-49 universal binary (arm64 + x86_64)
-from bin/imagemagick/convert relative to the repository root.
+Bundled ImageMagick 7.1.0-49 binaries (bin/imagemagick/):
+  macOS        : convert-darwin / identify-darwin  (fat binary: arm64 + x86_64)
+  Linux x86_64 : convert-linux-x86_64
+  Linux x86    : convert-linux-x86
+  Linux aarch64: convert-linux-aarch64
+
+The correct binary is selected automatically based on the host platform.
 
 Usage:
-    python3 server.py [port]        default port: 9091
+    python3 server.py [port]        default port: 9090
 
 Upload scanner configuration:
     Upload endpoint : POST http://127.0.0.1:<port>/upload  (field: file)
@@ -24,17 +29,39 @@ Upload scanner configuration:
 """
 
 import os
+import platform
 import subprocess
 import sys
 import tempfile
-
-CONVERT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "bin", "imagemagick", "convert")
-)
-IDENTIFY = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "bin", "imagemagick", "identify")
-)
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+_BIN_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "bin", "imagemagick")
+)
+
+
+def _select_binary(name):
+    """Return the path to the platform-appropriate ImageMagick binary."""
+    system = platform.system()
+    if system == "Darwin":
+        return os.path.join(_BIN_DIR, f"{name}-darwin")
+    if system == "Linux":
+        machine = platform.machine()
+        if machine in ("x86_64", "amd64"):
+            suffix = "linux-x86_64"
+        elif machine in ("i386", "i486", "i586", "i686"):
+            suffix = "linux-x86"
+        elif machine in ("aarch64", "arm64"):
+            suffix = "linux-aarch64"
+        else:
+            suffix = f"linux-{machine}"
+        return os.path.join(_BIN_DIR, f"{name}-{suffix}")
+    # Fallback
+    return os.path.join(_BIN_DIR, f"{name}-darwin")
+
+
+CONVERT = _select_binary("convert")
+IDENTIFY = _select_binary("identify")
 
 # In-memory store: filename -> raw bytes of the *converted* output file
 _store = {}
@@ -209,12 +236,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9091
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9090
     try:
         result = subprocess.run([CONVERT, "--version"], capture_output=True, text=True)
         version_line = result.stdout.splitlines()[0] if result.stdout else "(unknown)"
     except FileNotFoundError:
         version_line = f"NOT FOUND at {CONVERT}"
+    print(f"[*] platform        : {platform.system()} {platform.machine()}")
     print(f"[*] convert path    : {CONVERT}")
     print(f"[*] ImageMagick     : {version_line}")
     print(f"[!] CVE-2022-44268 affects ImageMagick <= 7.1.0-49 — test environment only")
