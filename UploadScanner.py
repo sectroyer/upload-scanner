@@ -62,6 +62,8 @@ from java.awt import Desktop
 from java.awt import Dimension
 from java.awt import RenderingHints
 from java.awt.event import ActionListener
+from java.awt.event import ComponentAdapter
+from javax.swing import SwingUtilities
 from java.awt.image import BufferedImage
 from java.io import ByteArrayOutputStream
 from java.io import ByteArrayInputStream
@@ -8378,6 +8380,25 @@ class ScanMessageEditorController(IMessageEditorController):
     def getRedownloadResponse(self):
         return self.sc.redownload_resp_view.getMessage()
 
+class _ProgressBarResizer(ComponentAdapter):
+    """Keeps the progress bar width in sync with the btn_pf … btn_test span."""
+    def __init__(self, bar, btn_pf, btn_test):
+        self._bar = bar
+        self._btn_pf = btn_pf
+        self._btn_test = btn_test
+
+    def _sync(self, panel):
+        pf = SwingUtilities.convertPoint(self._btn_pf, 0, 0, panel)
+        tr = SwingUtilities.convertPoint(self._btn_test, self._btn_test.getWidth(), 0, panel)
+        new_w = tr.x - pf.x
+        if new_w > 0 and self._bar.getPreferredSize().width != new_w:
+            self._bar.setPreferredSize(Dimension(new_w, self._bar.getPreferredSize().height))
+            panel.revalidate()
+
+    def componentResized(self, e):
+        self._sync(e.getComponent())
+
+
 class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
 
     TEXTFIELD_SIZE = 20
@@ -8531,11 +8552,13 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.gbc.gridy += 1
 
         self.gbc.gridwidth = 2
+        self.gbc.insets = Insets(6, 0, 6, 0)
         self.progress_bar = JProgressBar(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setStringPainted(True)
         self.progress_bar.setString("")
         self.button_panel.add(self.progress_bar, self.gbc)
+        self.gbc.insets = Insets(0, 0, 0, 0)
         self.gbc.gridwidth = 1
         self.gbc.gridy += 1
 
@@ -8551,6 +8574,11 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.btn_test.setEnabled(False)
         self.button_panel.add(self.btn_test, self.gbc)
         self.gbc.gridx += 1
+
+        _resizer = _ProgressBarResizer(self.progress_bar, self.btn_preflight, self.btn_test)
+        self.button_panel.addComponentListener(_resizer)
+        _panel_ref = self.button_panel
+        SwingUtilities.invokeLater(lambda: _resizer._sync(_panel_ref))
 
         self.gbc.gridy += 1
         self.gbc.gridx = 0
