@@ -1691,7 +1691,10 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 if resp:
                     resp = FloydsHelpers.jb2ps(resp).split("\r\n\r\n", 1)[1]
 
-                    result = _read_ztxt_chunk_from_png(resp)
+                    try:
+                        result = _read_ztxt_chunk_from_png(resp)
+                    except Exception:
+                        result = None
 
                     if result and any(BurpExtender.REGEX_PASSWD.match(line) for line in result.split('\n') if line):
                         name = "ImageMagick Local File Include"
