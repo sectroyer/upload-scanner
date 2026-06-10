@@ -9249,6 +9249,11 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.module_labels['recursive_uploader'], self.modules['recursive_uploader'] = self.checkbox('Recursive uploader:', False)
         self.module_labels['fuzzer'], self.modules['fuzzer'] = self.checkbox('Fuzzer:', False)
         self.module_labels['dos'], self.modules['dos'] = self.checkbox('Timeout and DoS:', False)
+        self.btn_modules_uncheck_all = JButton("Uncheck all")
+        self.btn_modules_check_all = JButton("Check all")
+        self.btn_modules_uncheck_all.addActionListener(ActionFunction(self._uncheck_all_modules))
+        self.btn_modules_check_all.addActionListener(ActionFunction(self._check_all_modules))
+        self._add_two(self.btn_modules_uncheck_all, self.btn_modules_check_all)
 
         self.file_formats = {}
         self.file_format_labels = {}
@@ -9274,6 +9279,11 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.file_format_labels['html'], self.file_formats['html'] = self.checkbox('HTML:', True)
         self.file_format_labels['xml'], self.file_formats['xml'] = self.checkbox('XML:', True)
         self._all_file_formats = self.file_formats.keys()
+        self.btn_formats_uncheck_all = JButton("Uncheck all")
+        self.btn_formats_check_all = JButton("Check all")
+        self.btn_formats_uncheck_all.addActionListener(ActionFunction(self._uncheck_all_formats))
+        self.btn_formats_check_all.addActionListener(ActionFunction(self._check_all_formats))
+        self._add_two(self.btn_formats_uncheck_all, self.btn_formats_check_all)
 
         if self._global_options:
             self.label("General options for Active Scanning")
@@ -9580,20 +9590,52 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
 
         self._only_show_necessary_ui()
 
+    def _set_all_modules(self, selected):
+        self.disable_action_listener = True
+        for name in self.modules:
+            self.modules[name].setSelected(selected)
+        self.disable_action_listener = False
+        self.insertUpdate(None)
+
+    def _uncheck_all_modules(self, _=None):
+        self._set_all_modules(False)
+
+    def _check_all_modules(self, _=None):
+        self._set_all_modules(True)
+
+    def _set_all_formats(self, selected):
+        self.disable_action_listener = True
+        for name in self.file_formats:
+            self.file_formats[name].setSelected(selected)
+        self.disable_action_listener = False
+        self.insertUpdate(None)
+
+    def _uncheck_all_formats(self, _=None):
+        self._set_all_formats(False)
+
+    def _check_all_formats(self, _=None):
+        self._set_all_formats(True)
+
     def _only_show_necessary_ui(self):
         # Selectively hide/unhide certain options
 
         # Show or hide modules
+        modules_visible = self.cb_show_modules.isSelected()
         for name in self.modules:
-            self.modules[name].setVisible(self.cb_show_modules.isSelected())
+            self.modules[name].setVisible(modules_visible)
         for name in self.module_labels:
-            self.module_labels[name].setVisible(self.cb_show_modules.isSelected())
+            self.module_labels[name].setVisible(modules_visible)
+        self.btn_modules_uncheck_all.setVisible(modules_visible)
+        self.btn_modules_check_all.setVisible(modules_visible)
 
         # Show or hide formats
+        formats_visible = self.cb_show_formats.isSelected()
         for name in self.file_formats:
-            self.file_formats[name].setVisible(self.cb_show_formats.isSelected())
+            self.file_formats[name].setVisible(formats_visible)
         for name in self.file_format_labels:
-            self.file_format_labels[name].setVisible(self.cb_show_formats.isSelected())
+            self.file_format_labels[name].setVisible(formats_visible)
+        self.btn_formats_uncheck_all.setVisible(formats_visible)
+        self.btn_formats_check_all.setVisible(formats_visible)
 
         # Recursive Uploader
         state = bool(self.modules['recursive_uploader'].isSelected())
