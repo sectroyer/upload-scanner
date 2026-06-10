@@ -13,10 +13,12 @@ upload a crafted PNG, download the converted result, and read arbitrary files
 from the server filesystem.
 
 Bundled ImageMagick 7.1.0-49 binaries (bin/imagemagick/):
-  macOS        : convert-darwin / identify-darwin  (fat binary: arm64 + x86_64)
-  Linux x86_64 : convert-linux-x86_64
-  Linux x86    : convert-linux-x86
-  Linux aarch64: convert-linux-aarch64
+  macOS          : convert-darwin / identify-darwin  (fat binary: arm64 + x86_64)
+  Linux x86_64   : convert-linux-x86_64
+  Linux x86      : convert-linux-x86
+  Linux aarch64  : convert-linux-aarch64
+  Windows x86_64 : convert-windows-x86_64.exe
+  Windows x86    : convert-windows-x86.exe
 
 The correct binary is selected automatically based on the host platform.
 
@@ -56,6 +58,11 @@ def _select_binary(name):
         else:
             suffix = f"linux-{machine}"
         return os.path.join(_BIN_DIR, f"{name}-{suffix}")
+    if system == "Windows":
+        machine = platform.machine()
+        if machine in ("AMD64", "x86_64"):
+            return os.path.join(_BIN_DIR, f"{name}-windows-x86_64.exe")
+        return os.path.join(_BIN_DIR, f"{name}-windows-x86.exe")
     # Fallback
     return os.path.join(_BIN_DIR, f"{name}-darwin")
 

