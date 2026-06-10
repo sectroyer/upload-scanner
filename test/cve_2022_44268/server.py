@@ -12,17 +12,11 @@ The converted output is what is stored and served back, so an attacker can
 upload a crafted PNG, download the converted result, and read arbitrary files
 from the server filesystem.
 
+Uses the bundled ImageMagick 7.1.0-49 universal binary (arm64 + x86_64)
+from bin/imagemagick/convert relative to the repository root.
+
 Usage:
     python3 server.py [port]        default port: 9091
-
-Requirements:
-    A vulnerable ImageMagick must be on PATH (affects <= 7.1.0-49).
-    Quick check:  convert --version
-    Install a vulnerable version via your package manager or build from
-    source.  On macOS with Homebrew:
-        brew install imagemagick@6   # check exact version
-    On Debian/Ubuntu:
-        sudo apt install imagemagick
 
 Upload scanner configuration:
     Upload endpoint : POST http://127.0.0.1:<port>/upload  (field: file)
@@ -33,6 +27,13 @@ import os
 import subprocess
 import sys
 import tempfile
+
+CONVERT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "bin", "imagemagick", "convert")
+)
+IDENTIFY = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "bin", "imagemagick", "identify")
+)
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # In-memory store: filename -> raw bytes of the *converted* output file
@@ -140,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             result = subprocess.run(
-                ["convert", tmp_in_path, tmp_out_path],
+                [CONVERT, tmp_in_path, tmp_out_path],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -167,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             convert_status = "[convert timed out]"
         except FileNotFoundError:
             converted_data = None
-            convert_status = "[convert not found — install ImageMagick]"
+            convert_status = f"[convert not found at {CONVERT}]"
         except Exception as exc:
             converted_data = None
             convert_status = f"[Error running convert: {exc}]"
@@ -210,10 +211,11 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 9091
     try:
-        result = subprocess.run(["convert", "--version"], capture_output=True, text=True)
+        result = subprocess.run([CONVERT, "--version"], capture_output=True, text=True)
         version_line = result.stdout.splitlines()[0] if result.stdout else "(unknown)"
     except FileNotFoundError:
-        version_line = "NOT FOUND — install ImageMagick"
+        version_line = f"NOT FOUND at {CONVERT}"
+    print(f"[*] convert path    : {CONVERT}")
     print(f"[*] ImageMagick     : {version_line}")
     print(f"[!] CVE-2022-44268 affects ImageMagick <= 7.1.0-49 — test environment only")
     print(f"[*] Listening on http://0.0.0.0:{port}")
