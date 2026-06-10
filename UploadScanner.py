@@ -57,6 +57,8 @@ from java.awt import Color
 from java.awt import Insets
 from java.awt import GridBagLayout
 from java.awt import GridBagConstraints
+from java.awt import BorderLayout
+from java.awt import FlowLayout
 from java.awt import Image
 from java.awt import Desktop
 from java.awt import Dimension
@@ -550,7 +552,14 @@ class BurpExtender(IBurpExtender, IScannerCheck,
         # table of log entries
         logTable = Table(self)
         scrollPane = JScrollPane(logTable)
-        self._splitpane.setLeftComponent(scrollPane)
+        btn_clear_log = JButton("Clear log")
+        btn_clear_log.addActionListener(ActionFunction(self.clear_log))
+        btn_row = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 2))
+        btn_row.add(btn_clear_log)
+        log_panel = JPanel(BorderLayout())
+        log_panel.add(btn_row, BorderLayout.NORTH)
+        log_panel.add(scrollPane, BorderLayout.CENTER)
+        self._splitpane.setLeftComponent(log_panel)
 
         # tabs with request/response viewers
         tabs = JTabbedPane()
@@ -869,6 +878,13 @@ class BurpExtender(IBurpExtender, IScannerCheck,
             self._log.add(LogEntry(status, self._callbacks.saveBuffersToTempFiles(rr),
                                self._helpers.analyzeRequest(rr).getUrl()))
             self.fireTableRowsInserted(row, row)
+
+    def clear_log(self, _=None):
+        with self.globals_write_lock:
+            count = self._log.size()
+            self._log.clear()
+            if count > 0:
+                self.fireTableRowsDeleted(0, count - 1)
 
     # Implement IHttpListener
     def processHttpMessage(self, _, messageIsRequest, base_request_response):
@@ -1488,6 +1504,8 @@ class BurpExtender(IBurpExtender, IScannerCheck,
         # As described on https://hackerone.com/reports/212696
         types = [('', BurpExtender.MARKER_ORIG_EXT, '')]
         content = injector.get_uploaded_content()
+        if content is None:
+            return colabs
         name = "Image-/GraphicsMagick filename RCE"
         severity = "High"
         confidence = "Certain"
