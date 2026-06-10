@@ -1693,7 +1693,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
 
                     result = _read_ztxt_chunk_from_png(resp)
 
-                    if result and BurpExtender.REGEX_PASSWD.match(result.split('\n')[0]):
+                    if result and any(BurpExtender.REGEX_PASSWD.match(line) for line in result.split('\n') if line):
                         name = "ImageMagick Local File Include"
                         severity = "High"
                         confidence = "Firm"
