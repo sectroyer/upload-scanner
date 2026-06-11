@@ -785,7 +785,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
         # main split view
         splitpane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT)
         splitpane.setLeftComponent(JScrollPane(options))
-        splitpane.setRightComponent(JScrollPane(sc))
+        splitpane.setRightComponent(sc)
 
         # The CloseableTab will add itself to its parent
         CloseableTab(str(self._ui_tab_index), self._main_jtabedpane, splitpane,
