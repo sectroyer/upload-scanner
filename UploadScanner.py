@@ -340,6 +340,13 @@ class BurpExtender(IBurpExtender, IScannerCheck,
             ('xbm:', BurpExtender.MARKER_ORIG_EXT, ''),
         }
 
+        # WebP images (libwebp CVE-2023-4863)
+        self.WEBP_TYPES = {
+            ('', '.webp', ''),
+            ('', '.webp', 'image/webp'),
+            ('', BurpExtender.MARKER_ORIG_EXT, ''),
+        }
+
         # Ghostscript types
         self.GS_TYPES = {
             ('', BurpExtender.MARKER_ORIG_EXT, ''),
@@ -1144,6 +1151,8 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 ('ssrf',              "SSRF"),
                 ('csv_spreadsheet',   "CSV/spreadsheet"),
                 ('path_traversal',    "Path traversal"),
+                ('zipslip',           "Zip Slip"),
+                ('libwebp',           "libwebp"),
                 ('polyglot',          "Polyglot"),
                 ('fingerping',        "Fingerping"),
                 ('quirks',            "Quirks"),
@@ -1296,6 +1305,11 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 print "\nDoing Zip Slip checks"
                 colab_tests.extend(self._zip_slip(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
+            # libwebp CVE-2023-4863 - fingerprint/crash check
+            if injector.opts.modules['libwebp'].isSelected():
+                _progress("libwebp")
+                print "\nDoing libwebp CVE-2023-4863 checks"
+                self._libwebp_cve_2023_4863(injector)
             # Polyglot - generic
             if injector.opts.modules['polyglot'].isSelected():
                 _progress("Polyglot")
@@ -3887,6 +3901,95 @@ trailer <<
                     break
 
         return colab_tests
+
+    def _libwebp_cve_2023_4863(self, injector):
+        # CVE-2023-4863: heap buffer overflow in libwebp <= 1.3.1 via malformed VP8L Huffman tree.
+        # Affects everything using libwebp: Chrome, Electron, FFmpeg, libvips, ImageMagick, etc.
+        # Detection strategy:
+        #   1. Upload a valid 1x1 lossless (VP8L) WebP. If the server processes and re-serves it
+        #      as a WebP (RIFF/WEBP magic in the download), flag for manual follow-up.
+        #   2. Upload a crafted VP8L with use_meta_huffman=1 and garbage Huffman data. If the
+        #      upload returns 5xx, flag as tentative crash (possible CVE-2023-4863).
+        if not injector.opts.file_formats['webp'].isSelected():
+            return
+
+        # Minimal valid 1x1 white lossless (VP8L) WebP.
+        # VP8L bit layout (LSB-first per byte):
+        #   header 32b: width-1=0, height-1=0, alpha=0, version=0
+        #   transform_present=0, color_cache=0, use_meta_huffman=0
+        #   5 trees each simple/1-symbol: green=255, red=255, blue=255, alpha=255, dist=0
+        webp_valid = (
+            'RIFF\x1a\x00\x00\x00WEBP'
+            'VP8L\x0d\x00\x00\x00'
+            '\x2f\x00\x00\x00\x00'
+            '\xe8\x7f\xff\xfb\xdf\xff\x02\x00'
+            '\x00'
+        )
+
+        # Malformed VP8L: same header but use_meta_huffman flipped to 1 with
+        # garbage Huffman data following — triggers the OOB write in BuildHuffmanTable()
+        # on vulnerable libwebp versions.
+        webp_malformed = (
+            'RIFF\x1a\x00\x00\x00WEBP'
+            'VP8L\x0d\x00\x00\x00'
+            '\x2f\x00\x00\x00\x00'
+            '\xec\xff\xff\xff\xff\xff\xff\x00'
+            '\x00'
+        )
+
+        name_fp = "libwebp CVE-2023-4863 (WebP processing detected)"
+        detail_fp = (
+            "The server appears to process WebP image files server-side (the uploaded WebP was "
+            "returned in the download response). libwebp versions <= 1.3.1 are affected by "
+            "CVE-2023-4863, a heap buffer overflow triggered by a crafted VP8L lossless WebP "
+            "with a malformed Huffman tree. This vulnerability affects every application that "
+            "uses libwebp, including Chrome, Electron, FFmpeg, libvips, and ImageMagick. "
+            "Manual follow-up is recommended: identify the WebP-processing library and version "
+            "in use on this server and verify whether it is a vulnerable version of libwebp."
+        )
+
+        name_crash = "libwebp CVE-2023-4863 (possible crash on malformed WebP)"
+        detail_crash = (
+            "The server returned a server-side error (5xx) when processing a crafted WebP file "
+            "with a malformed VP8L Huffman tree. This is consistent with CVE-2023-4863, a heap "
+            "buffer overflow in libwebp <= 1.3.1 triggered by an invalid Huffman code "
+            "specification in a VP8L lossless WebP. Affected software includes Chrome, Electron, "
+            "FFmpeg, libvips, and ImageMagick. Manual verification of the libwebp version is "
+            "strongly recommended."
+        )
+
+        basename_valid = BurpExtender.DOWNLOAD_ME + self.FILE_START + "LibwebpValid"
+        basename_bad   = BurpExtender.DOWNLOAD_ME + self.FILE_START + "LibwebpCVE4863"
+
+        # Phase 1: fingerprint — upload valid WebP, check if downloaded back as WebP
+        urrs = self._send_simple(injector, self.WEBP_TYPES, basename_valid, webp_valid, redownload=True)
+        for urr in urrs:
+            if urr and urr.download_rr:
+                resp = urr.download_rr.getResponse()
+                if resp:
+                    body = FloydsHelpers.jb2ps(resp)
+                    body_offset = self._helpers.analyzeResponse(resp).getBodyOffset()
+                    body_content = body[body_offset:]
+                    if body_content.startswith('RIFF') and 'WEBP' in body_content[:16]:
+                        issue = self._create_issue_template(
+                            injector.get_brr(), name_fp, detail_fp, "Tentative", "Information")
+                        issue.httpMessagesPy = [urr.upload_rr, urr.download_rr]
+                        self._add_scan_issue(issue)
+                        break
+
+        # Phase 2: crash check — upload malformed VP8L, look for 5xx on upload
+        urrs_bad = self._send_simple(injector, self.WEBP_TYPES, basename_bad, webp_malformed)
+        for urr in urrs_bad:
+            if urr and urr.upload_rr:
+                resp = urr.upload_rr.getResponse()
+                if resp:
+                    status = self._helpers.analyzeResponse(resp).getStatusCode()
+                    if 500 <= status <= 599:
+                        issue = self._create_issue_template(
+                            injector.get_brr(), name_crash, detail_crash, "Tentative", "High")
+                        issue.httpMessagesPy = [urr.upload_rr]
+                        self._add_scan_issue(issue)
+                        break
 
     def _polyglot(self, injector, burp_colab):
         colab_tests = []
@@ -9527,6 +9630,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.module_labels['csv_spreadsheet'], self.modules['csv_spreadsheet'] = self.checkbox('CSV/spreadsheet:', True)
         self.module_labels['path_traversal'], self.modules['path_traversal'] = self.checkbox('Path traversal:', True)
         self.module_labels['zipslip'], self.modules['zipslip'] = self.checkbox('Zip Slip (archive traversal):', True)
+        self.module_labels['libwebp'], self.modules['libwebp'] = self.checkbox('libwebp CVE-2023-4863 (WebP):', True)
         self.module_labels['polyglot'], self.modules['polyglot'] = self.checkbox('CSP bypass polyglots:', True)
         if self.redl_enabled:
             self.module_labels['fingerping'], self.modules['fingerping'] = self.checkbox('Fingerping (fingerprint image libs):', True)
@@ -9553,6 +9657,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.file_format_labels['png'], self.file_formats['png'] = self.checkbox('PNG images:', True)
         self.file_format_labels['jpeg'], self.file_formats['jpeg'] = self.checkbox('JPEG images:', True)
         self.file_format_labels['tiff'], self.file_formats['tiff'] = self.checkbox('TIFF images:', True)
+        self.file_format_labels['webp'], self.file_formats['webp'] = self.checkbox('WebP images:', True)
         self.file_format_labels['ico'], self.file_formats['ico'] = self.checkbox('ICO images:', True)
         self.file_format_labels['svg'], self.file_formats['svg'] = self.checkbox('SVG images:', True)
         self.file_format_labels['mvg'], self.file_formats['mvg'] = self.checkbox('MVG images:', True)
