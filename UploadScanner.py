@@ -8703,41 +8703,44 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
 
         self.gbc.gridwidth = 2
         self.gbc.insets = Insets(6, 0, 6, 0)
+        self.gbc.fill = GridBagConstraints.HORIZONTAL
         self.progress_bar = JProgressBar(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setStringPainted(True)
         self.progress_bar.setString("")
         self.button_panel.add(self.progress_bar, self.gbc)
         self.gbc.insets = Insets(0, 0, 0, 0)
+        self.gbc.fill = GridBagConstraints.NONE
         self.gbc.gridwidth = 1
         self.gbc.gridy += 1
 
-        # Request test buttons row (preflight / publish / redownload)
+        # Col 0: preflight / publish / redownload  |  Col 1: start / stop
+        self.gbc.anchor = GridBagConstraints.WEST
         self.btn_preflight = JButton("Send preflight request")
         self.btn_preflight.setEnabled(False)
         self.btn_publish = JButton("Send publish request")
         self.btn_publish.setEnabled(False)
         self.btn_test = JButton("Send ReDownloader request")
         self.btn_test.setEnabled(False)
-        _req_btns = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0))
-        _req_btns.add(self.btn_preflight)
-        _req_btns.add(self.btn_publish)
-        _req_btns.add(self.btn_test)
-        self.gbc.gridwidth = 2
-        self.gbc.gridx = 0
-        self.gbc.anchor = GridBagConstraints.WEST
-        self.button_panel.add(_req_btns, self.gbc)
-        self.gbc.gridy += 1
-
-        # Scan control buttons row (start / stop)
         self.btn_start = JButton("Start scan without ReDownloader")
         self.btn_start.setEnabled(True)
         self.btn_stop = JButton("Stop scan")
         self.btn_stop.setEnabled(False)
-        _scan_btns = JPanel(FlowLayout(FlowLayout.LEFT, 5, 0))
-        _scan_btns.add(self.btn_start)
-        _scan_btns.add(self.btn_stop)
-        self.button_panel.add(_scan_btns, self.gbc)
+
+        self.gbc.gridx = 0
+        self.button_panel.add(self.btn_preflight, self.gbc)
+        self.gbc.gridx = 1
+        self.button_panel.add(self.btn_start, self.gbc)
+        self.gbc.gridy += 1
+
+        self.gbc.gridx = 0
+        self.button_panel.add(self.btn_publish, self.gbc)
+        self.gbc.gridx = 1
+        self.button_panel.add(self.btn_stop, self.gbc)
+        self.gbc.gridy += 1
+
+        self.gbc.gridx = 0
+        self.button_panel.add(self.btn_test, self.gbc)
         self.gbc.gridy += 1
 
         self.gbc.gridwidth = 1
