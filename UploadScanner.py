@@ -8715,7 +8715,7 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.gbc.gridy += 1
 
         # Col 0: preflight / publish / redownload  |  Col 1: start / stop
-        self.gbc.anchor = GridBagConstraints.WEST
+        self.gbc.anchor = GridBagConstraints.CENTER
         self.btn_preflight = JButton("Send preflight request")
         self.btn_preflight.setEnabled(False)
         self.btn_publish = JButton("Send publish request")
