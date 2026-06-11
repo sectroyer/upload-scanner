@@ -347,6 +347,15 @@ class BurpExtender(IBurpExtender, IScannerCheck,
             ('', BurpExtender.MARKER_ORIG_EXT, ''),
         }
 
+        # TIFF images (libtiff CVE-2023-0795 – CVE-2023-0802)
+        self.TIFF_TYPES = {
+            ('', '.tiff', ''),
+            ('', '.tiff', 'image/tiff'),
+            ('', '.tif', ''),
+            ('', '.tif', 'image/tiff'),
+            ('', BurpExtender.MARKER_ORIG_EXT, ''),
+        }
+
         # Ghostscript types
         self.GS_TYPES = {
             ('', BurpExtender.MARKER_ORIG_EXT, ''),
@@ -1153,6 +1162,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 ('path_traversal',    "Path traversal"),
                 ('zipslip',           "Zip Slip"),
                 ('libwebp',           "libwebp"),
+                ('libtiff',           "libtiff"),
                 ('polyglot',          "Polyglot"),
                 ('fingerping',        "Fingerping"),
                 ('quirks',            "Quirks"),
@@ -1310,6 +1320,11 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 _progress("libwebp")
                 print "\nDoing libwebp CVE-2023-4863 checks"
                 self._libwebp_cve_2023_4863(injector)
+            # libtiff CVE-2023-0795-0802 - fingerprint/crash check
+            if injector.opts.modules['libtiff'].isSelected():
+                _progress("libtiff")
+                print "\nDoing libtiff CVE-2023-0795 checks"
+                self._libtiff_cve_2023_0795(injector)
             # Polyglot - generic
             if injector.opts.modules['polyglot'].isSelected():
                 _progress("Polyglot")
@@ -4046,6 +4061,113 @@ trailer <<
 
         # Phase 2: crash check — upload malformed VP8L, look for 5xx on upload
         urrs_bad = self._send_simple(injector, self.WEBP_TYPES, basename_bad, webp_malformed)
+        for urr in urrs_bad:
+            if urr and urr.upload_rr:
+                resp = urr.upload_rr.getResponse()
+                if resp:
+                    status = self._helpers.analyzeResponse(resp).getStatusCode()
+                    if 500 <= status <= 599:
+                        issue = self._create_issue_template(
+                            injector.get_brr(), name_crash, detail_crash, "Tentative", "High")
+                        issue.httpMessagesPy = [urr.upload_rr]
+                        self._add_scan_issue(issue)
+                        break
+
+    def _libtiff_cve_2023_0795(self, injector):
+        # CVE-2023-0795 to CVE-2023-0802: heap buffer overflows in libtiff <= 4.4.0
+        # triggered by crafted TIFF IFD entries (integer overflows in strip/tile size
+        # calculations in extractImageSection and _TIFFmemcpy).
+        # Affects anything using libtiff: ImageMagick, libvips, PIL/Pillow, GDAL, etc.
+        # Detection strategy:
+        #   1. Upload a valid 1x1 grayscale TIFF. If the server processes and re-serves it
+        #      with TIFF magic, flag for manual libtiff version check.
+        #   2. Upload a malformed TIFF: SamplesPerPixel=3 + PlanarConfig=SEPARATE with
+        #      mismatched BitsPerSample count and huge StripByteCounts. If 5xx, flag as
+        #      tentative crash (possible CVE-2023-0795 to -0802).
+        if not injector.opts.file_formats['tiff'].isSelected():
+            return
+
+        # Valid minimal 1x1 grayscale TIFF (little-endian).
+        # Header + 9-entry IFD + 1 pixel byte at offset 122.
+        tiff_valid = (
+            'II\x2a\x00\x08\x00\x00\x00'   # magic LE, version 42, IFD at offset 8
+            '\x09\x00'                        # 9 IFD entries
+            '\x00\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # ImageWidth  = 1
+            '\x01\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # ImageLength = 1
+            '\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00'  # BitsPerSample = 8
+            '\x03\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # Compression = 1 (none)
+            '\x06\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # PhotometricInterp = 1
+            '\x11\x01\x04\x00\x01\x00\x00\x00\x7a\x00\x00\x00'  # StripOffsets = 122
+            '\x15\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # SamplesPerPixel = 1
+            '\x16\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # RowsPerStrip = 1
+            '\x17\x01\x04\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # StripByteCounts = 1
+            '\x00\x00\x00\x00'               # next IFD = 0
+            '\x00'                            # pixel data (1 black pixel)
+        )
+
+        # Malformed TIFF targeting CVE-2023-0795 code path:
+        # 4096x4096 RGB, PlanarConfig=SEPARATE (3 planes), BitsPerSample declares
+        # only 1 value instead of 3, StripByteCounts=0x7FFFFFFF — triggers integer
+        # overflow in the strip-size calculation on vulnerable libtiff.
+        tiff_malformed = (
+            'II\x2a\x00\x08\x00\x00\x00'   # magic LE, IFD at offset 8
+            '\x0a\x00'                        # 10 IFD entries
+            '\x00\x01\x03\x00\x01\x00\x00\x00\x00\x10\x00\x00'  # ImageWidth  = 4096
+            '\x01\x01\x03\x00\x01\x00\x00\x00\x00\x10\x00\x00'  # ImageLength = 4096
+            '\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00'  # BitsPerSample = 8 (1 value, not 3)
+            '\x03\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # Compression = 1 (none)
+            '\x06\x01\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00'  # PhotometricInterp = 2 (RGB)
+            '\x11\x01\x04\x00\x01\x00\x00\x00\xff\xff\x00\x00'  # StripOffsets = 0xFFFF (past EOF)
+            '\x15\x01\x03\x00\x01\x00\x00\x00\x03\x00\x00\x00'  # SamplesPerPixel = 3
+            '\x16\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'  # RowsPerStrip = 1
+            '\x17\x01\x04\x00\x01\x00\x00\x00\xff\xff\xff\x7f'  # StripByteCounts = 0x7FFFFFFF
+            '\x1c\x01\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00'  # PlanarConfig = 2 (SEPARATE)
+            '\x00\x00\x00\x00'               # next IFD = 0
+        )
+
+        name_fp = "libtiff CVE-2023-0795-0802 (TIFF processing detected)"
+        detail_fp = (
+            "The server appears to process TIFF image files server-side (the uploaded TIFF was "
+            "returned in the download response with TIFF magic bytes). libtiff versions <= 4.4.0 "
+            "are affected by CVE-2023-0795 through CVE-2023-0802, a series of heap buffer overflows "
+            "triggered by crafted TIFF IFD entries (integer overflows in strip/tile size calculations "
+            "in extractImageSection and _TIFFmemcpy). This affects everything using libtiff: "
+            "ImageMagick, libvips, PIL/Pillow, GDAL, and many others. "
+            "Manual follow-up is recommended: identify the TIFF-processing library and version "
+            "in use on this server and verify whether it is a vulnerable version of libtiff."
+        )
+
+        name_crash = "libtiff CVE-2023-0795-0802 (possible crash on malformed TIFF)"
+        detail_crash = (
+            "The server returned a server-side error (5xx) when processing a crafted TIFF with a "
+            "mismatched BitsPerSample count, PlanarConfig=SEPARATE, and an oversized StripByteCounts "
+            "field. This is consistent with CVE-2023-0795 through CVE-2023-0802, heap buffer overflows "
+            "in libtiff <= 4.4.0 triggered by integer overflow in strip-size calculations. "
+            "Affected software includes ImageMagick, libvips, PIL/Pillow, and GDAL. "
+            "Manual verification of the libtiff version is strongly recommended."
+        )
+
+        basename_valid = BurpExtender.DOWNLOAD_ME + self.FILE_START + "LibtiffValid"
+        basename_bad   = BurpExtender.DOWNLOAD_ME + self.FILE_START + "LibtiffCVE0795"
+
+        # Phase 1: fingerprint — upload valid TIFF, check if downloaded back as TIFF
+        urrs = self._send_simple(injector, self.TIFF_TYPES, basename_valid, tiff_valid, redownload=True)
+        for urr in urrs:
+            if urr and urr.download_rr:
+                resp = urr.download_rr.getResponse()
+                if resp:
+                    body = FloydsHelpers.jb2ps(resp)
+                    body_offset = self._helpers.analyzeResponse(resp).getBodyOffset()
+                    body_content = body[body_offset:]
+                    if body_content[:4] in ('II\x2a\x00', 'MM\x00\x2a'):
+                        issue = self._create_issue_template(
+                            injector.get_brr(), name_fp, detail_fp, "Tentative", "Information")
+                        issue.httpMessagesPy = [urr.upload_rr, urr.download_rr]
+                        self._add_scan_issue(issue)
+                        break
+
+        # Phase 2: crash check — upload malformed TIFF, look for 5xx on upload
+        urrs_bad = self._send_simple(injector, self.TIFF_TYPES, basename_bad, tiff_malformed)
         for urr in urrs_bad:
             if urr and urr.upload_rr:
                 resp = urr.upload_rr.getResponse()
@@ -9698,6 +9820,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.module_labels['path_traversal'], self.modules['path_traversal'] = self.checkbox('Path traversal:', True)
         self.module_labels['zipslip'], self.modules['zipslip'] = self.checkbox('Zip Slip (archive traversal):', True)
         self.module_labels['libwebp'], self.modules['libwebp'] = self.checkbox('libwebp CVE-2023-4863 (WebP):', True)
+        self.module_labels['libtiff'], self.modules['libtiff'] = self.checkbox('libtiff CVE-2023-0795-0802 (TIFF):', True)
         self.module_labels['polyglot'], self.modules['polyglot'] = self.checkbox('CSP bypass polyglots:', True)
         if self.redl_enabled:
             self.module_labels['fingerping'], self.modules['fingerping'] = self.checkbox('Fingerping (fingerprint image libs):', True)
