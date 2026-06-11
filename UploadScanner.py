@@ -8703,14 +8703,12 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
 
         self.gbc.gridwidth = 2
         self.gbc.insets = Insets(6, 0, 6, 0)
-        self.gbc.fill = GridBagConstraints.HORIZONTAL
         self.progress_bar = JProgressBar(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setStringPainted(True)
         self.progress_bar.setString("")
         self.button_panel.add(self.progress_bar, self.gbc)
         self.gbc.insets = Insets(0, 0, 0, 0)
-        self.gbc.fill = GridBagConstraints.NONE
         self.gbc.gridwidth = 1
         self.gbc.gridy += 1
 
@@ -8742,6 +8740,11 @@ class ScanController(JSplitPane, IMessageEditorController, DocumentListener):
         self.gbc.gridx = 0
         self.button_panel.add(self.btn_test, self.gbc)
         self.gbc.gridy += 1
+
+        _resizer = _ProgressBarResizer(self.progress_bar, self.btn_preflight, self.btn_start)
+        self.button_panel.addComponentListener(_resizer)
+        _panel_ref = self.button_panel
+        SwingUtilities.invokeLater(lambda: _resizer._sync(_panel_ref))
 
         self.gbc.gridwidth = 1
         self.gbc.gridx = 0
