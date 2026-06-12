@@ -2,6 +2,7 @@ UploadScanner Burp extension
 A Burp Suite Pro extension to do security tests for HTTP file uploads.
 
 Copyright (C) 2018-2020 modzero AG, Tobias Ospelt
+Copyright (C) 2026 sectroyer, MichaÅ‚ Majchrowicz
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -18,7 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY 
 APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT 
-HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM “AS IS” WITHOUT 
+HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM ï¿½AS ISï¿½ WITHOUT 
 WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING, BUT NOT 
 LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR 
 A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND 
